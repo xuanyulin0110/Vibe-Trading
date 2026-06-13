@@ -14,7 +14,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, model_validator, field_validator
@@ -62,6 +62,7 @@ class BacktestConfigSchema(BaseModel):
     interval: str = "1D"
     engine: str = "daily"
     fundamental_fields: Optional[Dict[str, List[str]]] = None
+    event_feeds: Optional[List[Dict[str, Any]]] = None
 
     @field_validator("codes")
     @classmethod
@@ -115,6 +116,21 @@ class BacktestConfigSchema(BaseModel):
                 raise ValueError("fundamental_fields table names must be non-empty strings")
             if any(not field.strip() for field in fields):
                 raise ValueError("fundamental_fields field names must be non-empty strings")
+        return v
+
+    @field_validator("event_feeds")
+    @classmethod
+    def valid_event_feeds(cls, v: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+        if v is None:
+            return v
+        for entry in v:
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    "each event_feeds entry must be an object with name/route_template/event_type"
+                )
+            for key in ("name", "route_template", "event_type"):
+                if not str(entry.get(key, "")).strip():
+                    raise ValueError(f"event_feeds entry missing required field: {key}")
         return v
 
     @model_validator(mode="after")
