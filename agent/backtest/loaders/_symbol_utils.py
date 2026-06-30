@@ -18,3 +18,8 @@ def _is_etf_listed(code: str) -> bool:
     if len(digits) != 6 or not digits.isdigit():
         return False
     return digits[:2] in _ETF_PREFIXES
+
+
+def _strip_tw_suffix(code: str) -> str:
+    """Strip the .TW/.TWO suffix to get the bare TWSE/TPEx stock id (2330.TW -> 2330)."""
+    return code.split(".")[0]

@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from backtest.loaders._symbol_utils import _strip_tw_suffix
 from backtest.loaders.base import cached_loader_fetch, validate_date_range, validate_ohlc
 from backtest.loaders.registry import register
 
@@ -37,11 +38,6 @@ _FIELD_MAP = {
     "close": "price:收盤價",
     "volume": "price:成交股數",
 }
-
-
-def _strip_tw_suffix(code: str) -> str:
-    """Strip the .TW/.TWO suffix to get finlab's bare stock id (e.g. 2330.TW -> 2330)."""
-    return code.split(".")[0]
 
 
 @register

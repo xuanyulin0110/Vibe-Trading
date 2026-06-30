@@ -22,6 +22,10 @@ agent/.env
 # Local AI agent skill installs (machine-specific, not project source)
 .agents/
 skills-lock.json
+
+# Shioaji SDK local log output
+shioaji.log
+agent/shioaji.log
 !.claude/hooks.json
 CLAUDE.md
 .vscode/
