@@ -36,6 +36,8 @@ from src.market_data import (
         ("600519.SH", "tencent"),
         ("000001.SZ", "tencent"),
         ("430139.BJ", "tencent"),
+        ("2330.TW", "finlab"),
+        ("6488.TWO", "finlab"),
         ("AAPL.US", "yahoo"),
         ("700.HK", "yahoo"),
         ("00700.HK", "yahoo"),

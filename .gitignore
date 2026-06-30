@@ -18,6 +18,10 @@ results/
 agent/.env
 
 .claude/*
+
+# Local AI agent skill installs (machine-specific, not project source)
+.agents/
+skills-lock.json
 !.claude/hooks.json
 CLAUDE.md
 .vscode/

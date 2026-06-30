@@ -298,6 +298,7 @@ def _validate_signal_engine_class(engine_cls) -> None:
 # Back-compat: market type -> legacy source name (for engine selection & metrics)
 _MARKET_TO_SOURCE = {
     "a_share": "tushare",
+    "tw_equity": "finlab",
     "us_equity": "yfinance",
     "hk_equity": "yfinance",
     "crypto": "okx",
@@ -575,6 +576,11 @@ def _create_market_engine(source: str, config: dict, codes: List[str]):
     if "forex" in markets:
         from backtest.engines.forex import ForexEngine
         return ForexEngine(config)
+
+    # Taiwan equity routing
+    if "tw_equity" in markets:
+        from backtest.engines.tw_equity import TWEquityEngine
+        return TWEquityEngine(config)
 
     # Original routing (Wave 1)
     if source in ("okx", "ccxt"):

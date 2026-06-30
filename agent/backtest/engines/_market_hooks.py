@@ -25,6 +25,12 @@ from backtest.models import Position
 _MARKET_PATTERNS = [
     (re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.I), "a_share"),
     (re.compile(r"^(51|15|56)\d{4}\.(SZ|SH)$", re.I), "a_share"),
+    # Taiwan equities (TWSE/TPEx): bare 4-6 digit code + .TW/.TWO suffix
+    # (e.g. 2330.TW, 6488.TWO). The suffix is required — bare digit codes
+    # with no suffix fall through to the a_share default below, so an
+    # unsuffixed finlab-style code must be normalized to one of these before
+    # reaching market detection.
+    (re.compile(r"^\d{4,6}\.TWO?$", re.I), "tw_equity"),
     (re.compile(r"^[A-Z]+\.US$", re.I), "us_equity"),
     (re.compile(r"^\d{3,5}\.HK$", re.I), "hk_equity"),
     (re.compile(r"^[A-Z]+-USDT$", re.I), "crypto"),
@@ -69,7 +75,7 @@ def _detect_market(code: str) -> str:
         code: Ticker / symbol string.
 
     Returns:
-        Market type (a_share/us_equity/hk_equity/crypto/futures/forex);
+        Market type (a_share/tw_equity/us_equity/hk_equity/crypto/futures/forex);
         unknown defaults to ``a_share``.
     """
     for pattern, market in _MARKET_PATTERNS:
