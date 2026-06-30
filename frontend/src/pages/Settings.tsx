@@ -42,6 +42,11 @@ export function Settings() {
   const [clearApiKey, setClearApiKey] = useState(false);
   const [tushareToken, setTushareToken] = useState("");
   const [clearTushareToken, setClearTushareToken] = useState(false);
+  const [finlabToken, setFinlabToken] = useState("");
+  const [clearFinlabToken, setClearFinlabToken] = useState(false);
+  const [shioajiApiKey, setShioajiApiKey] = useState("");
+  const [shioajiSecretKey, setShioajiSecretKey] = useState("");
+  const [clearShioajiCredentials, setClearShioajiCredentials] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dataSaving, setDataSaving] = useState(false);
@@ -137,10 +142,20 @@ export function Settings() {
       const updated = await api.updateDataSourceSettings({
         tushare_token: tushareToken.trim() || undefined,
         clear_tushare_token: clearTushareToken,
+        finlab_token: finlabToken.trim() || undefined,
+        clear_finlab_token: clearFinlabToken,
+        shioaji_api_key: shioajiApiKey.trim() || undefined,
+        shioaji_secret_key: shioajiSecretKey.trim() || undefined,
+        clear_shioaji_credentials: clearShioajiCredentials,
       });
       setDataSettings(updated);
       setTushareToken("");
       setClearTushareToken(false);
+      setFinlabToken("");
+      setClearFinlabToken(false);
+      setShioajiApiKey("");
+      setShioajiSecretKey("");
+      setClearShioajiCredentials(false);
       toast.success("Data source settings saved");
     } catch (error) {
       toast.error(`Failed to save data source settings: ${error instanceof Error ? error.message : "Unknown error"}`);
@@ -218,6 +233,12 @@ export function Settings() {
   const tushareStatus = dataSettings.tushare_token_configured
     ? "Configured"
     : "Leave blank to keep the current token";
+  const finlabStatus = dataSettings.finlab_token_configured
+    ? "Configured"
+    : "Leave blank to keep the current token";
+  const shioajiStatus = dataSettings.shioaji_configured
+    ? "Configured"
+    : "Leave blank to keep the current key";
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
@@ -446,6 +467,87 @@ export function Settings() {
               </div>
             </label>
 
+            <label className="grid gap-2">
+              <span className={labelClass}>{"finlab token"}</span>
+              <div className="relative">
+                <KeyRound className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <input
+                  type="password"
+                  value={finlabToken}
+                  onChange={(event) => setFinlabToken(event.target.value)}
+                  className={`${fieldClass} pl-9`}
+                  placeholder={finlabStatus}
+                  autoComplete="current-password"
+                  disabled={clearFinlabToken}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className={hintClass}>{"Taiwan equity historical data (三大法人/融資融券/月營收), fallback when Shioaji is unavailable. Get a token at ai.finlab.tw."}</span>
+                <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={clearFinlabToken}
+                    onChange={(event) => {
+                      setClearFinlabToken(event.target.checked);
+                      if (event.target.checked) setFinlabToken("");
+                    }}
+                    className="h-3.5 w-3.5 accent-primary"
+                  />
+                  {"Clear saved finlab token"}
+                </label>
+              </div>
+            </label>
+
+            <label className="grid gap-2">
+              <span className={labelClass}>{"Shioaji API key / secret"}</span>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="relative">
+                  <KeyRound className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <input
+                    type="password"
+                    value={shioajiApiKey}
+                    onChange={(event) => setShioajiApiKey(event.target.value)}
+                    className={`${fieldClass} pl-9`}
+                    placeholder="API key"
+                    autoComplete="current-password"
+                    disabled={clearShioajiCredentials}
+                  />
+                </div>
+                <div className="relative">
+                  <KeyRound className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <input
+                    type="password"
+                    value={shioajiSecretKey}
+                    onChange={(event) => setShioajiSecretKey(event.target.value)}
+                    className={`${fieldClass} pl-9`}
+                    placeholder="Secret key"
+                    autoComplete="current-password"
+                    disabled={clearShioajiCredentials}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className={hintClass}>
+                  {`${shioajiStatus} — primary Taiwan equity/quote source (SinoPac). Create keys at sinotrade.com.tw/newweb/PythonAPIKey.`}
+                </span>
+                <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={clearShioajiCredentials}
+                    onChange={(event) => {
+                      setClearShioajiCredentials(event.target.checked);
+                      if (event.target.checked) {
+                        setShioajiApiKey("");
+                        setShioajiSecretKey("");
+                      }
+                    }}
+                    className="h-3.5 w-3.5 accent-primary"
+                  />
+                  {"Clear saved Shioaji credentials"}
+                </label>
+              </div>
+            </label>
+
             <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">{i18n.t("settings.saved")}: </span>
               <span className="break-all font-mono">{dataSettings.env_path}</span>
@@ -461,20 +563,42 @@ export function Settings() {
             </button>
           </div>
 
-          <div className="rounded-md border bg-muted/20 p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <span className="text-sm font-medium">{"BaoStock"}</span>
-              <span className={`rounded-full px-2 py-0.5 text-xs ${dataSettings.baostock_supported ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>
-                {dataSettings.baostock_supported ? "Loader available" : "No project loader"}
-              </span>
+          <div className="grid gap-3">
+            <div className="rounded-md border bg-muted/20 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <span className="text-sm font-medium">{"Shioaji"}</span>
+                <span className={`rounded-full px-2 py-0.5 text-xs ${dataSettings.shioaji_configured ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>
+                  {dataSettings.shioaji_configured ? "Configured" : "Not configured"}
+                </span>
+              </div>
+              <p className="text-sm text-muted-foreground">{"Primary source for Taiwan equity historical/real-time data (2330.TW etc.). Falls back to finlab when unavailable."}</p>
             </div>
-            <div className="space-y-2 text-sm text-muted-foreground">
-              <p>{dataSettings.baostock_message}</p>
-              <p>
-                {dataSettings.baostock_installed
-                  ? "Python package installed"
-                  : "Python package not installed"}
-              </p>
+
+            <div className="rounded-md border bg-muted/20 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <span className="text-sm font-medium">{"finlab"}</span>
+                <span className={`rounded-full px-2 py-0.5 text-xs ${dataSettings.finlab_token_configured ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>
+                  {dataSettings.finlab_token_configured ? "Configured" : "Not configured"}
+                </span>
+              </div>
+              <p className="text-sm text-muted-foreground">{"Taiwan equity fallback source plus 三大法人/融資融券/月營收 enrichment for backtests."}</p>
+            </div>
+
+            <div className="rounded-md border bg-muted/20 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <span className="text-sm font-medium">{"BaoStock"}</span>
+                <span className={`rounded-full px-2 py-0.5 text-xs ${dataSettings.baostock_supported ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>
+                  {dataSettings.baostock_supported ? "Loader available" : "No project loader"}
+                </span>
+              </div>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>{dataSettings.baostock_message}</p>
+                <p>
+                  {dataSettings.baostock_installed
+                    ? "Python package installed"
+                    : "Python package not installed"}
+                </p>
+              </div>
             </div>
           </div>
         </div>

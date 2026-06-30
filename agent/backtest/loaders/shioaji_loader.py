@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import time
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -33,6 +35,35 @@ import pandas as pd
 from backtest.loaders._symbol_utils import _strip_tw_suffix
 from backtest.loaders.base import cached_loader_fetch, validate_date_range, validate_ohlc
 from backtest.loaders.registry import register
+
+#: Lock files older than this are assumed abandoned by a dead/killed process
+#: rather than held by a genuinely in-progress download (which finishes in
+#: well under a minute) -- see ``_clear_stale_shioaji_locks``.
+_STALE_LOCK_SECONDS = 120.0
+
+
+def _clear_stale_shioaji_locks(max_age_seconds: float = _STALE_LOCK_SECONDS) -> None:
+    """Remove stale Shioaji contract-cache lock files before login.
+
+    Confirmed empirically: ``shioaji.Shioaji().login()`` writes a
+    ``contracts-*.parquet.lock`` file per contract type into ``SJ_HOME_PATH``
+    (default ``~/.shioaji``) during the contract download and never removes
+    it afterward, even on a clean process exit. A later login then hangs
+    indefinitely waiting on a lock no live process holds -- reproduced
+    repeatedly in testing (see commit history). Only locks older than
+    ``max_age_seconds`` are removed, so a genuinely concurrent in-progress
+    download is not disturbed.
+    """
+    home = Path(os.environ.get("SJ_HOME_PATH") or (Path.home() / ".shioaji"))
+    if not home.is_dir():
+        return
+    now = time.time()
+    for lock_file in home.glob("*.lock"):
+        try:
+            if now - lock_file.stat().st_mtime > max_age_seconds:
+                lock_file.unlink()
+        except OSError:
+            pass
 
 SJ_KEY_PLACEHOLDERS = {"", "your_api_key", "your_sj_api_key"}
 SJ_SECRET_PLACEHOLDERS = {"", "your_secret_key", "your_sj_secret_key"}
@@ -97,6 +128,7 @@ class DataLoader:
             return
         import shioaji as sj
 
+        _clear_stale_shioaji_locks()
         production = os.getenv("SJ_PRODUCTION", "false").strip().lower() in ("1", "true", "yes")
         api = sj.Shioaji(simulation=not production)
         api.login(

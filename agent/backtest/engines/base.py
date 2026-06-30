@@ -188,12 +188,34 @@ def _maybe_enrich_fundamentals(
     data_map: Dict[str, pd.DataFrame],
     config: Dict[str, Any],
 ) -> Dict[str, pd.DataFrame]:
-    """Attach configured Tushare statement fields before signal generation."""
+    """Attach configured statement/chip fields before signal generation.
+
+    Routes to ``FinlabFundamentalProvider`` (三大法人/融資融券/月營收) when any
+    code is a TW equity, otherwise to the existing ``TushareFundamentalProvider``
+    (A-share statement tables) -- the two providers' table names never collide,
+    but a single backtest is always one market, so routing per-market rather
+    than per-table keeps this simple.
+    """
     fields_by_table = _normalise_fundamental_fields(config)
     if not fields_by_table:
         return data_map
 
+    from backtest.engines._market_hooks import _detect_market
+
+    markets = {_detect_market(code) for code in data_map}
+
     try:
+        if "tw_equity" in markets:
+            from backtest.loaders.finlab_fundamentals import (
+                FinlabFundamentalProvider,
+                enrich_price_frames_with_finlab_fundamentals,
+            )
+
+            provider = FinlabFundamentalProvider()
+            return enrich_price_frames_with_finlab_fundamentals(
+                data_map, provider, fields_by_table,
+            )
+
         provider = TushareFundamentalProvider()
         return enrich_price_frames_with_fundamentals(
             data_map,
@@ -204,7 +226,7 @@ def _maybe_enrich_fundamentals(
         )
     except Exception as exc:
         raise RuntimeError(
-            f"fundamental_fields requested but Tushare enrichment failed: {exc}"
+            f"fundamental_fields requested but enrichment failed: {exc}"
         ) from exc
 
 

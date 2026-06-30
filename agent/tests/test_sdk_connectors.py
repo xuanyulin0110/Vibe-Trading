@@ -24,6 +24,8 @@ from src.trading.connectors.longbridge import sdk as lb
 from src.trading.connectors.longbridge.classification import LONGBRIDGE_TOOL_CLASS
 from src.trading.connectors.okx import sdk as ox
 from src.trading.connectors.okx.classification import OKX_TOOL_CLASS
+from src.trading.connectors.shioaji import sdk as sj
+from src.trading.connectors.shioaji.classification import SHIOAJI_TOOL_CLASS
 from src.trading.connectors.shoonya import sdk as sh
 from src.trading.connectors.shoonya.classification import SHOONYA_TOOL_CLASS
 from src.trading.connectors.tiger import sdk as tg
@@ -49,15 +51,18 @@ def test_sdk_profiles_registered() -> None:
         "futu-paper-sdk", "futu-live-sdk-readonly",
         "dhan-paper-sdk", "dhan-live-sdk-readonly",
         "shoonya-paper-sdk", "shoonya-live-sdk-readonly",
+        "shioaji-paper-sdk", "shioaji-live-sdk-readonly",
     } <= ids
 
 
 def test_no_discriminator_brokers_expose_no_live_trade_profile() -> None:
     """Brokers without a runtime paper/live discriminator (Longbridge, Dhan,
-    Shoonya) must NOT register any live order-placing profile — the Longbridge
-    precedent. A ``*-live-trade`` profile here would be a red-line regression."""
+    Shoonya, Shioaji) must NOT register any live order-placing profile — the
+    Longbridge precedent. A ``*-live-trade`` profile here would be a red-line
+    regression. Shioaji has no account-format discriminator either (one
+    account, a ``simulation`` boolean), so it belongs in this group too."""
     ids = {p.id for p in profiles.list_profiles()}
-    for broker in ("longbridge", "dhan", "shoonya"):
+    for broker in ("longbridge", "dhan", "shoonya", "shioaji"):
         assert f"{broker}-live-trade" not in ids
         # No live profile for these brokers may advertise an order capability.
         for p in profiles.list_profiles():
@@ -84,6 +89,8 @@ def test_no_discriminator_brokers_expose_no_live_trade_profile() -> None:
         ("dhan-live-sdk-readonly", "dhan", "live"),
         ("shoonya-paper-sdk", "shoonya", "paper"),
         ("shoonya-live-sdk-readonly", "shoonya", "live"),
+        ("shioaji-paper-sdk", "shioaji", "paper"),
+        ("shioaji-live-sdk-readonly", "shioaji", "live"),
     ],
 )
 def test_sdk_profiles_are_readonly_broker_sdk(profile_id, connector, environment) -> None:
@@ -584,3 +591,178 @@ def test_shoonya_service_unconfigured(monkeypatch, tmp_path) -> None:
     assert result["status"] == "error"
     assert result["connector"] == "shoonya"
     assert result["transport"] == "broker_sdk"
+
+
+# --------------------------------------------------------------------------- #
+# Shioaji
+# --------------------------------------------------------------------------- #
+
+
+def test_shioaji_clear_stale_locks_removes_old_not_recent(tmp_path, monkeypatch) -> None:
+    import os
+    import time
+
+    monkeypatch.setenv("SJ_HOME_PATH", str(tmp_path))
+    old_lock = tmp_path / "contracts-1.5.4-STK-TW.parquet.lock"
+    recent_lock = tmp_path / "contracts-1.5.4-FUT-TW.parquet.lock"
+    old_lock.touch()
+    recent_lock.touch()
+    old_time = time.time() - 999
+    os.utime(old_lock, (old_time, old_time))
+
+    sj._clear_stale_shioaji_locks(max_age_seconds=120.0)
+
+    assert not old_lock.exists()
+    assert recent_lock.exists()
+
+
+def test_shioaji_simulation_flag_mapping() -> None:
+    assert sj.ShioajiConfig(profile="paper").simulation is True
+    assert sj.ShioajiConfig(profile="live-readonly").simulation is False
+
+
+def test_shioaji_build_config_merges_profile_then_overrides(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(sj, "get_runtime_root", lambda: tmp_path)
+    cfg = sj.build_config({"profile": "live-readonly"}, {"api_key": "real-key"})
+    assert cfg.profile == "live-readonly"
+    assert cfg.api_key == "real-key"
+
+
+def test_shioaji_invalid_profile_rejected() -> None:
+    with pytest.raises(sj.ShioajiConfigError):
+        sj.ShioajiConfig.from_mapping({"profile": "go-live"})
+
+
+def test_shioaji_redacts_secrets() -> None:
+    cfg = sj.ShioajiConfig(api_key="abcd1234", secret_key="supersecret", profile="paper")
+    pub = sj._public_config(cfg)
+    assert pub["secret_key"] == "***redacted***"
+    assert "supersecret" not in str(pub)
+    assert pub["api_key"].endswith("***")
+
+
+def test_shioaji_order_placement_not_implemented() -> None:
+    """This phase is read-only -- no place_order/cancel_order function exists."""
+    assert not hasattr(sj, "place_order")
+    assert not hasattr(sj, "cancel_order")
+
+
+def test_shioaji_classification() -> None:
+    for name in ("snapshots", "kbars", "list_positions", "account_balance"):
+        assert SHIOAJI_TOOL_CLASS[name] is ToolClass.READ
+
+
+def test_shioaji_service_unconfigured(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(sj, "get_runtime_root", lambda: tmp_path)
+    result = service.check_connection("shioaji-paper-sdk")
+    assert result["status"] == "error"
+    assert "not configured" in result["error"]
+    assert result["connector"] == "shioaji"
+    assert result["transport"] == "broker_sdk"
+
+
+class _FakeShioajiContract:
+    code = "2330"
+
+
+class _FakeShioajiContracts:
+    Stocks = {"2330": _FakeShioajiContract()}
+
+
+class _FakeShioajiSnapshot:
+    code = "2330"
+    close = 602.0
+    buy_price = 601.0
+    sell_price = 603.0
+    open = 600.0
+    high = 605.0
+    low = 598.0
+    total_volume = 12345
+    change_price = 2.0
+    change_rate = 0.33
+    ts = 1234567890
+
+
+class _FakeShioajiApi:
+    Contracts = _FakeShioajiContracts()
+
+    def __init__(self) -> None:
+        self.kbars_calls: list[dict] = []
+
+    def snapshots(self, contracts):
+        return [_FakeShioajiSnapshot()]
+
+    def list_positions(self):
+        return []
+
+    def account_balance(self):
+        return None
+
+    def list_trades(self):
+        return []
+
+    def logout(self):
+        return True
+
+
+def test_shioaji_get_quote_maps_snapshot_fields(monkeypatch) -> None:
+    fake = _FakeShioajiApi()
+    monkeypatch.setattr(sj, "_login", lambda cfg: fake)
+    cfg = sj.ShioajiConfig(api_key="k", secret_key="s", profile="paper")
+
+    result = sj.get_quote("2330.TW", config=cfg)
+
+    assert result["status"] == "ok"
+    assert result["quote"]["symbol"] == "2330"
+    assert result["quote"]["last"] == 602.0
+    assert result["quote"]["bid"] == 601.0
+    assert result["quote"]["ask"] == 603.0
+
+
+def test_shioaji_get_quote_strips_tw_suffix(monkeypatch) -> None:
+    """The bare Shioaji contract lookup must use the stock id, not the .TW-suffixed symbol."""
+    fake = _FakeShioajiApi()
+    monkeypatch.setattr(sj, "_login", lambda cfg: fake)
+    cfg = sj.ShioajiConfig(api_key="k", secret_key="s", profile="paper")
+
+    result = sj.get_quote("2330.TWO", config=cfg)
+    assert result["status"] == "ok"
+
+
+def test_shioaji_get_positions_empty_is_ok(monkeypatch) -> None:
+    fake = _FakeShioajiApi()
+    monkeypatch.setattr(sj, "_login", lambda cfg: fake)
+    cfg = sj.ShioajiConfig(api_key="k", secret_key="s", profile="paper")
+
+    result = sj.get_positions(config=cfg)
+    assert result["status"] == "ok"
+    assert result["positions"] == []
+
+
+def test_shioaji_history_resamples_minute_kbars_to_daily(monkeypatch) -> None:
+    import pandas as pd
+
+    class _KBars:
+        ts = [
+            pd.Timestamp("2026-01-02 09:00:00").value,
+            pd.Timestamp("2026-01-02 09:01:00").value,
+            pd.Timestamp("2026-01-03 09:00:00").value,
+        ]
+        Open = [600.0, 601.0, 610.0]
+        High = [602.0, 603.0, 612.0]
+        Low = [599.0, 600.0, 609.0]
+        Close = [601.0, 602.0, 611.0]
+        Volume = [100, 200, 300]
+
+    fake = _FakeShioajiApi()
+    fake.kbars = lambda contract, start, end: _KBars()
+    monkeypatch.setattr(sj, "_login", lambda cfg: fake)
+    cfg = sj.ShioajiConfig(api_key="k", secret_key="s", profile="paper")
+
+    result = sj.get_historical_bars("2330.TW", config=cfg, period="1d", limit=10)
+
+    assert result["status"] == "ok"
+    assert len(result["bars"]) == 2
+    assert result["bars"][0]["open"] == 600.0
+    assert result["bars"][0]["high"] == 603.0  # max(602, 603) across the day's two bars
+    assert result["bars"][0]["volume"] == 300.0  # 100 + 200 summed

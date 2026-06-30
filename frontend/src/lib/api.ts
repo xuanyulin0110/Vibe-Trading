@@ -270,12 +270,19 @@ export interface DataSourceSettings {
   baostock_supported: boolean;
   baostock_installed: boolean;
   baostock_message: string;
+  finlab_token_configured: boolean;
+  shioaji_configured: boolean;
   env_path: string;
 }
 
 export interface UpdateDataSourceSettingsRequest {
   tushare_token?: string;
   clear_tushare_token?: boolean;
+  finlab_token?: string;
+  clear_finlab_token?: boolean;
+  shioaji_api_key?: string;
+  shioaji_secret_key?: string;
+  clear_shioaji_credentials?: boolean;
 }
 
 // --- Types matching backend API contracts ---

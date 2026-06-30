@@ -125,9 +125,23 @@ def test_get_data_source_settings_treats_placeholder_as_unconfigured(
     assert body["tushare_token_hint"] is None
     assert body["baostock_supported"] is False
     assert body["baostock_installed"] is False
+    assert body["finlab_token_configured"] is False
+    assert body["shioaji_configured"] is False
     assert not Path(body["env_path"]).is_absolute()
     assert body["env_path"].endswith(".env")
     assert not (tmp_path / ".env").exists()
+
+
+def test_get_data_source_settings_shioaji_requires_both_keys(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    """shioaji_configured is only true when BOTH SJ_API_KEY and SJ_SEC_KEY are set."""
+    (tmp_path / ".env").write_text("SJ_API_KEY=real-key\n", encoding="utf-8")
+
+    response = client.get("/settings/data-sources")
+
+    assert response.status_code == 200
+    assert response.json()["shioaji_configured"] is False
 
 
 def test_settings_response_never_exposes_configured_secret_hints(
@@ -245,6 +259,60 @@ def test_update_data_source_settings_persists_tushare_token(
 
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "TUSHARE_TOKEN=ts-secret-token" in env_text
+
+
+def test_update_data_source_settings_persists_finlab_token(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    response = client.put(
+        "/settings/data-sources",
+        json={"finlab_token": "fl-secret-token"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["finlab_token_configured"] is True
+    assert "fl-secret-token" not in response.text
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "FINLAB_API_TOKEN=fl-secret-token" in env_text
+
+
+def test_update_data_source_settings_persists_shioaji_credentials(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    response = client.put(
+        "/settings/data-sources",
+        json={"shioaji_api_key": "sj-key", "shioaji_secret_key": "sj-secret"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["shioaji_configured"] is True
+    assert "sj-secret" not in response.text
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "SJ_API_KEY=sj-key" in env_text
+    assert "SJ_SEC_KEY=sj-secret" in env_text
+
+
+def test_update_data_source_settings_clears_shioaji_credentials(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    client.put(
+        "/settings/data-sources",
+        json={"shioaji_api_key": "sj-key", "shioaji_secret_key": "sj-secret"},
+    )
+
+    response = client.put(
+        "/settings/data-sources",
+        json={"clear_shioaji_credentials": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["shioaji_configured"] is False
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "SJ_API_KEY=sj-key" not in env_text
 
 
 def test_settings_writes_reject_remote_dev_mode_clients(

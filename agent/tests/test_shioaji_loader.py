@@ -11,14 +11,45 @@ backtest run racing on the SDK's on-disk contract-cache lock files).
 
 from __future__ import annotations
 
+import time
+
 import pandas as pd
 
 from backtest.loaders.shioaji_loader import (
     _CHUNK_DAYS,
     DataLoader,
+    _clear_stale_shioaji_locks,
     _date_chunks,
     _resample_minute_kbars_to_daily,
 )
+
+
+class TestClearStaleShioajiLocks:
+    def test_removes_old_lock_files(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("SJ_HOME_PATH", str(tmp_path))
+        old_lock = tmp_path / "contracts-1.5.4-STK-TW.parquet.lock"
+        old_lock.touch()
+        old_time = time.time() - 999
+        import os
+        os.utime(old_lock, (old_time, old_time))
+
+        _clear_stale_shioaji_locks(max_age_seconds=120.0)
+
+        assert not old_lock.exists()
+
+    def test_preserves_recent_lock_files(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("SJ_HOME_PATH", str(tmp_path))
+        recent_lock = tmp_path / "contracts-1.5.4-STK-TW.parquet.lock"
+        recent_lock.touch()
+
+        _clear_stale_shioaji_locks(max_age_seconds=120.0)
+
+        assert recent_lock.exists()
+
+    def test_no_op_when_home_dir_missing(self, tmp_path, monkeypatch) -> None:
+        missing = tmp_path / "does-not-exist"
+        monkeypatch.setenv("SJ_HOME_PATH", str(missing))
+        _clear_stale_shioaji_locks()  # must not raise
 
 
 class TestLazyLogin:

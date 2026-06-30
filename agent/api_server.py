@@ -200,6 +200,8 @@ class DataSourceSettingsResponse(BaseModel):
     baostock_supported: bool
     baostock_installed: bool
     baostock_message: str
+    finlab_token_configured: bool
+    shioaji_configured: bool
     env_path: str
 
 
@@ -208,6 +210,11 @@ class UpdateDataSourceSettingsRequest(BaseModel):
 
     tushare_token: Optional[str] = None
     clear_tushare_token: bool = False
+    finlab_token: Optional[str] = None
+    clear_finlab_token: bool = False
+    shioaji_api_key: Optional[str] = None
+    shioaji_secret_key: Optional[str] = None
+    clear_shioaji_credentials: bool = False
 
 
 # ---- V4 Session Models ----
@@ -970,6 +977,8 @@ LLM_PROVIDER_BY_NAME = {provider.name: provider for provider in LLM_PROVIDERS}
 LLM_REASONING_EFFORTS = {"", "low", "medium", "high", "max"}
 LLM_API_KEY_PLACEHOLDERS = {"", "sk-or-v1-your-key-here", "sk-xxx", "xxx", "gsk_xxx"}
 TUSHARE_TOKEN_PLACEHOLDERS = {"", "your-tushare-token"}
+FINLAB_TOKEN_PLACEHOLDERS = {"", "your-finlab-token"}
+SHIOAJI_KEY_PLACEHOLDERS = {"", "your_api_key", "your_secret_key"}
 
 
 def _ensure_agent_env_file() -> Path:
@@ -1138,6 +1147,12 @@ def _build_data_source_settings_response(values: Optional[Dict[str, str]] = None
     env_values = values if values is not None else _read_settings_env_values()
     token = env_values.get("TUSHARE_TOKEN", "")
     token_configured = _is_configured_secret(token, TUSHARE_TOKEN_PLACEHOLDERS)
+    finlab_token_configured = _is_configured_secret(
+        env_values.get("FINLAB_API_TOKEN", ""), FINLAB_TOKEN_PLACEHOLDERS
+    )
+    shioaji_configured = _is_configured_secret(
+        env_values.get("SJ_API_KEY", ""), SHIOAJI_KEY_PLACEHOLDERS
+    ) and _is_configured_secret(env_values.get("SJ_SEC_KEY", ""), SHIOAJI_KEY_PLACEHOLDERS)
     supported = _baostock_supported()
     installed = _baostock_installed()
     if supported:
@@ -1152,6 +1167,8 @@ def _build_data_source_settings_response(values: Optional[Dict[str, str]] = None
         baostock_supported=supported,
         baostock_installed=installed,
         baostock_message=baostock_message,
+        finlab_token_configured=finlab_token_configured,
+        shioaji_configured=shioaji_configured,
         env_path=_project_relative_path(ENV_PATH),
     )
 
@@ -1676,6 +1693,26 @@ async def update_data_source_settings(payload: UpdateDataSourceSettingsRequest):
     elif "TUSHARE_TOKEN" in current_values:
         updates["TUSHARE_TOKEN"] = current_values["TUSHARE_TOKEN"]
 
+    if payload.clear_finlab_token:
+        updates["FINLAB_API_TOKEN"] = ""
+    elif payload.finlab_token is not None and payload.finlab_token.strip():
+        updates["FINLAB_API_TOKEN"] = payload.finlab_token.strip()
+    elif "FINLAB_API_TOKEN" in current_values:
+        updates["FINLAB_API_TOKEN"] = current_values["FINLAB_API_TOKEN"]
+
+    if payload.clear_shioaji_credentials:
+        updates["SJ_API_KEY"] = ""
+        updates["SJ_SEC_KEY"] = ""
+    else:
+        if payload.shioaji_api_key is not None and payload.shioaji_api_key.strip():
+            updates["SJ_API_KEY"] = payload.shioaji_api_key.strip()
+        elif "SJ_API_KEY" in current_values:
+            updates["SJ_API_KEY"] = current_values["SJ_API_KEY"]
+        if payload.shioaji_secret_key is not None and payload.shioaji_secret_key.strip():
+            updates["SJ_SEC_KEY"] = payload.shioaji_secret_key.strip()
+        elif "SJ_SEC_KEY" in current_values:
+            updates["SJ_SEC_KEY"] = current_values["SJ_SEC_KEY"]
+
     if updates:
         _write_env_values(ENV_PATH, updates)
         token = updates.get("TUSHARE_TOKEN", "").strip()
@@ -1683,6 +1720,19 @@ async def update_data_source_settings(payload: UpdateDataSourceSettingsRequest):
             os.environ["TUSHARE_TOKEN"] = token
         else:
             os.environ.pop("TUSHARE_TOKEN", None)
+
+        finlab_token = updates.get("FINLAB_API_TOKEN", "").strip()
+        if _is_configured_secret(finlab_token, FINLAB_TOKEN_PLACEHOLDERS):
+            os.environ["FINLAB_API_TOKEN"] = finlab_token
+        else:
+            os.environ.pop("FINLAB_API_TOKEN", None)
+
+        for env_key in ("SJ_API_KEY", "SJ_SEC_KEY"):
+            value = updates.get(env_key, "").strip()
+            if _is_configured_secret(value, SHIOAJI_KEY_PLACEHOLDERS):
+                os.environ[env_key] = value
+            else:
+                os.environ.pop(env_key, None)
 
     return _build_data_source_settings_response(_read_env_values(ENV_PATH))
 
