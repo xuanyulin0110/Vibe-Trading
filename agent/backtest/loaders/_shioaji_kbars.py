@@ -25,18 +25,37 @@ these lines corrupt that stream for every TW equity/futures MCP tool call
 "Failed to parse JSONRPC message from server" for each such line). Every
 Shioaji SDK call site (login, kbars, quotes, account/position/trade queries)
 must run inside this context manager.
+
+Also hosts ``fetch_minute_kbars_cached`` (see plan follow-up, 2026-07-01): a
+gap-aware persistent minute-bar cache. Shioaji enforces a hard daily byte
+quota (confirmed via ``api.usage()`` -- ``UsageOut(bytes=530316799,
+limit_bytes=524288000, remaining_bytes=-6028799)`` after a day of heavy
+testing) plus a combined 50-queries/10s rate limit across
+ticks/snapshots/kbars/credit_enquires/short_stock_sources (see
+https://sinotrade.github.io/zh/tutor/limit/). Exceeding either does NOT
+raise -- kbars()/ticks()/snapshots() silently return empty results, which is
+indistinguishable at the single-request level from "genuinely no data for
+this range" (e.g. a holiday). See ``fetch_minute_kbars_cached``'s docstring
+for the full design.
 """
 
 from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import json
 import os
 import time
 from pathlib import Path
 from typing import Any, Iterator, List
 
 import pandas as pd
+
+from backtest.loaders.base import (
+    _read_loader_cache_frame,
+    _sanitize_cache_segment,
+    _write_loader_cache_frame,
+)
 
 
 @contextlib.contextmanager
@@ -170,6 +189,208 @@ def fetch_minute_kbars(api: Any, contract: Any, start_date: str, end_date: str) 
     for col in ("open", "high", "low", "close", "volume"):
         minute_df[col] = pd.to_numeric(minute_df[col], errors="coerce")
     return minute_df.dropna(subset=["open", "high", "low", "close"])
+
+
+# ---------------------------------------------------------------------------
+# Gap-aware persistent minute-bar cache (see module docstring for why).
+# ---------------------------------------------------------------------------
+
+MINUTE_CACHE_ENV = "VIBE_TRADING_SHIOAJI_MINUTE_CACHE"
+
+#: Unlike backtest.loaders.base's general opt-in loader cache (default off),
+#: this one defaults ON: it's safe-by-construction (always gap-filled to the
+#: full requested range -- via _quota_has_headroom's guard -- rather than a
+#: possibly-stale partial read), and Shioaji's hard byte quota makes
+#: cache-by-default the safer choice specifically for this source. Opt out
+#: with VIBE_TRADING_SHIOAJI_MINUTE_CACHE=0.
+_MINUTE_CACHE_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _minute_cache_enabled() -> bool:
+    return os.getenv(MINUTE_CACHE_ENV, "").strip().lower() not in _MINUTE_CACHE_FALSE_VALUES
+
+
+def _minute_cache_path(source: str, symbol: str) -> Path:
+    """Path to the persistent per-(source, symbol) 1-minute-bar parquet store."""
+    source_dir = _sanitize_cache_segment(source)
+    symbol_file = _sanitize_cache_segment(symbol)
+    return (
+        Path.home() / ".vibe-trading" / "cache" / "loaders"
+        / source_dir / "_minute_bars" / f"{symbol_file}.parquet"
+    )
+
+
+def _coverage_path(cache_path: Path) -> Path:
+    # Distinct suffix from _loader_cache_metadata_path's "<name>.json" (index
+    # dtype/column metadata) -- no collision.
+    return cache_path.with_suffix(cache_path.suffix + ".coverage.json")
+
+
+def _read_coverage(cache_path: Path) -> List[tuple[str, str]]:
+    """Load the list of (start, end) ISO date pairs already fetched from Shioaji."""
+    path = _coverage_path(cache_path)
+    if not path.is_file():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return [(str(s), str(e)) for s, e in raw]
+    except Exception:  # noqa: BLE001 - corrupt sidecar degrades to "nothing covered yet"
+        return []
+
+
+def _write_coverage(cache_path: Path, intervals: List[tuple[str, str]]) -> None:
+    path = _coverage_path(cache_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(intervals), encoding="utf-8")
+    except OSError:
+        pass  # non-fatal, mirrors _write_loader_cache_frame's write-failure tolerance
+
+
+def _merge_date_intervals(intervals: List[tuple[str, str]]) -> List[tuple[str, str]]:
+    """Merge overlapping/adjacent (start, end) ISO date pairs into a minimal sorted set."""
+    if not intervals:
+        return []
+    parsed = sorted(
+        (dt.date.fromisoformat(s), dt.date.fromisoformat(e)) for s, e in intervals
+    )
+    merged: List[List[dt.date]] = [list(parsed[0])]
+    for start, end in parsed[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end + dt.timedelta(days=1):
+            merged[-1][1] = max(last_end, end)
+        else:
+            merged.append([start, end])
+    return [(s.isoformat(), e.isoformat()) for s, e in merged]
+
+
+def _subtract_date_intervals(
+    requested: tuple[str, str], covered: List[tuple[str, str]],
+) -> List[tuple[str, str]]:
+    """Return the gap sub-ranges of ``requested`` not covered by any interval in ``covered``."""
+    req_start = dt.date.fromisoformat(requested[0])
+    req_end = dt.date.fromisoformat(requested[1])
+
+    clipped: List[tuple[dt.date, dt.date]] = []
+    for s, e in covered:
+        cs = max(dt.date.fromisoformat(s), req_start)
+        ce = min(dt.date.fromisoformat(e), req_end)
+        if cs <= ce:
+            clipped.append((cs, ce))
+    clipped.sort()
+
+    gaps: List[tuple[str, str]] = []
+    cursor = req_start
+    for cs, ce in clipped:
+        if cs > cursor:
+            gaps.append((cursor.isoformat(), (cs - dt.timedelta(days=1)).isoformat()))
+        cursor = max(cursor, ce + dt.timedelta(days=1))
+    if cursor <= req_end:
+        gaps.append((cursor.isoformat(), req_end.isoformat()))
+    return gaps
+
+
+def _quota_has_headroom(api: Any) -> bool:
+    """Best-effort pre-flight quota check via Shioaji's documented ``api.usage()``.
+
+    An over-quota kbars() query returns an empty result, not an error (see
+    module docstring) -- indistinguishable at the single-request level from
+    "genuinely no data for this range". Without this check, a quota-exhausted
+    fetch would get marked "covered" by ``fetch_minute_kbars_cached`` below,
+    and the resulting hole would never be retried. If ``usage()`` itself
+    fails, default to assuming headroom -- this guard exists for the known,
+    confirmed failure mode (exhausted quota), not to block on an unrelated
+    problem.
+    """
+    try:
+        with suppress_native_stdout():
+            usage = api.usage()
+        return usage.remaining_bytes > 0
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def fetch_minute_kbars_cached(
+    api: Any, contract: Any, *, source: str, symbol: str, start_date: str, end_date: str,
+) -> pd.DataFrame:
+    """Gap-aware, persistent alternative to :func:`fetch_minute_kbars`.
+
+    Maintains one 1-minute-bar parquet store per ``(source, symbol)`` plus a
+    coverage sidecar of already-fetched date ranges. Each call fetches only
+    the sub-ranges of ``[start_date, end_date]`` not yet covered, merges them
+    into the local store, and serves the full requested range from disk.
+    Every resampled interval shares the same underlying store, so e.g. a 5m
+    request over dates a prior 1D request already covered is also a full
+    cache hit. Falls back to a plain, uncached :func:`fetch_minute_kbars`
+    call when ``VIBE_TRADING_SHIOAJI_MINUTE_CACHE=0``.
+
+    Today is never marked "covered", however long ago it was first fetched
+    this process: its bar is still forming intraday, so treating it as a
+    settled fact would serve stale data to a later call the same day (same
+    rationale as ``backtest.loaders.base.loader_cache_range_is_final``). It's
+    still fetched and merged into the local store for *this* call's return
+    value -- just not persisted into the coverage sidecar.
+
+    A residual gap: if quota runs out *mid-way* through fetching a single
+    multi-chunk gap (rather than being already exhausted before this call
+    starts, which ``_quota_has_headroom`` does catch), the partial result for
+    that gap still gets marked "covered". Accepted trade-off -- catching the
+    common case (already exhausted) without tracking quota per 29-day chunk.
+    """
+    if not _minute_cache_enabled():
+        return fetch_minute_kbars(api, contract, start_date, end_date)
+
+    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    settled_end = min(end_date, yesterday)
+
+    cache_path = _minute_cache_path(source, symbol)
+    local = _read_loader_cache_frame(cache_path)
+    covered = _read_coverage(cache_path)
+
+    gaps: List[tuple[str, str]] = []
+    if start_date <= settled_end:
+        gaps = _subtract_date_intervals((start_date, settled_end), covered)
+
+    today = dt.date.today().isoformat()
+    live_start = max(start_date, today)
+    fetch_live = live_start <= end_date
+
+    if gaps or fetch_live:
+        new_pieces: List[pd.DataFrame] = []
+        if gaps:
+            if _quota_has_headroom(api):
+                for gap_start, gap_end in gaps:
+                    chunk = fetch_minute_kbars(api, contract, gap_start, gap_end)
+                    if not chunk.empty:
+                        new_pieces.append(chunk)
+                covered = _merge_date_intervals(covered + gaps)
+            else:
+                print(
+                    f"[WARN] shioaji minute cache: quota exhausted, serving cached-only "
+                    f"data for {symbol} ({len(gaps)} uncached gap(s) skipped this call)"
+                )
+                gaps = []  # nothing actually fetched -- don't persist a bogus "covered"
+        if fetch_live:
+            live_chunk = fetch_minute_kbars(api, contract, live_start, end_date)
+            if not live_chunk.empty:
+                new_pieces.append(live_chunk)
+
+        if new_pieces:
+            pieces = [local] if local is not None and not local.empty else []
+            pieces.extend(new_pieces)
+            local = pd.concat(pieces).sort_index()
+            local = local[~local.index.duplicated(keep="last")]
+            if local is not None and not local.empty:
+                _write_loader_cache_frame(cache_path, local)
+        if gaps:  # only persist coverage for the settled portion that was actually fetched
+            _write_coverage(cache_path, covered)
+
+    if local is None or local.empty:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+    return local.loc[(local.index >= start_ts) & (local.index < end_ts)]
 
 
 def resample_kbars(minute_df: pd.DataFrame, interval: str) -> pd.DataFrame:

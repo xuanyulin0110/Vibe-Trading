@@ -24,12 +24,12 @@ import pandas as pd
 
 from backtest.loaders._shioaji_kbars import (
     clear_stale_shioaji_locks,
-    fetch_minute_kbars,
+    fetch_minute_kbars_cached,
     is_supported_interval,
     resample_kbars,
     suppress_native_stdout,
 )
-from backtest.loaders.base import cached_loader_fetch, validate_date_range, validate_ohlc
+from backtest.loaders.base import validate_date_range, validate_ohlc
 from backtest.loaders.registry import register
 from backtest.loaders.shioaji_loader import SJ_KEY_PLACEHOLDERS, SJ_SECRET_PLACEHOLDERS
 
@@ -124,18 +124,7 @@ class DataLoader:
 
             result: Dict[str, pd.DataFrame] = {}
             for code in codes:
-                def _fetch_one(code: str = code) -> Optional[pd.DataFrame]:
-                    return self._fetch_one_code(code, start_date, end_date, interval)
-
-                df = cached_loader_fetch(
-                    source=self.name,
-                    symbol=code,
-                    timeframe=interval,
-                    start_date=start_date,
-                    end_date=end_date,
-                    fields=None,
-                    fetch=_fetch_one,
-                )
+                df = self._fetch_one_code(code, start_date, end_date, interval)
                 if df is not None and not df.empty:
                     result[code] = df
 
@@ -162,12 +151,15 @@ class DataLoader:
     def _fetch_one_code(
         self, code: str, start_date: str, end_date: str, interval: str,
     ) -> Optional[pd.DataFrame]:
-        """Pull chunked 1-minute K-bars for one futures contract and resample."""
+        """Pull 1-minute K-bars for one futures contract (gap-aware cached) and resample."""
         contract = self._resolve_contract(code)
         if contract is None:
             return None
 
-        minute_df = fetch_minute_kbars(self.api, contract, start_date, end_date)
+        minute_df = fetch_minute_kbars_cached(
+            self.api, contract, source=self.name, symbol=code,
+            start_date=start_date, end_date=end_date,
+        )
         if minute_df.empty:
             return None
 
