@@ -28,6 +28,34 @@ services:
       - vibe-uploads:/app/agent/uploads
     restart: unless-stopped
 
+  mcp-sse:
+    # Native MCP transport for remote clients (e.g. Claude Code / Gemini CLI
+    # run from a laptop, not SSH'd into this host) -- the MCP spec's own
+    # design split is stdio for same-machine subprocess clients, HTTP-based
+    # transport for network clients, so this replaces wrapping stdio through
+    # `docker exec` for that use case. Shares the same image/volumes as
+    # vibe-trading so MCP-run backtests land in the same runs/ the web UI
+    # reads -- this service has no separate app code of its own, just a
+    # different entrypoint command into the same install.
+    build: .
+    command: vibe-trading-mcp --transport sse --port 8900
+    ports:
+      - "8900:8900"
+    env_file:
+      - agent/.env
+    environment:
+      - VIBE_TRADING_TRUST_DOCKER_LOOPBACK=1
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - vibe-runs:/app/agent/runs
+      - vibe-sessions:/app/agent/sessions
+      - vibe-home:/home/vibe/.vibe-trading
+      - vibe-swarm-runs:/app/agent/.swarm/runs
+      - vibe-uploads:/app/agent/uploads
+    restart: unless-stopped
+
   frontend:
     image: node:20
     working_dir: /app
