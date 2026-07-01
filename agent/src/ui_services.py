@@ -369,7 +369,19 @@ def _load_ohlcv_artifacts(run_dir: Path) -> List[Dict[str, Any]]:
     for f in ohlcv_files:
         code = f.stem.removeprefix("ohlcv_")
         for r in load_csv_records(f):
-            ts = r.get("trade_date") or r.get("timestamp") or r.get("time") or r.get("")
+            # Column name depends on the loader's DataFrame index name at
+            # write time (backtest/engines/base.py's df.to_csv() doesn't
+            # normalize it): yfinance_loader.py sets "trade_date", finlab's
+            # own data comes in already named "date", and Shioaji-sourced
+            # frames are unnamed (empty header) -- check all of them rather
+            # than silently dropping every row for whichever source doesn't
+            # match. Confirmed empirically: a finlab-sourced TW equity
+            # backtest's ohlcv_2330.TW.csv header is "date,open,high,...",
+            # which this dropped entirely before "date" was added here.
+            ts = (
+                r.get("trade_date") or r.get("date") or r.get("timestamp")
+                or r.get("time") or r.get("")
+            )
             if not ts:
                 continue
             rows.append({
@@ -577,7 +589,9 @@ def _normalize_price_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     normalized: List[Dict[str, Any]] = []
     for row in rows:
-        timestamp = format_run_date(row.get("timestamp") or row.get("time"))
+        # See _load_ohlcv_artifacts()'s comment -- "date" is a real column
+        # name a source DataFrame's index can carry through to CSV.
+        timestamp = format_run_date(row.get("timestamp") or row.get("time") or row.get("date"))
         if not timestamp:
             continue
         normalized.append(
