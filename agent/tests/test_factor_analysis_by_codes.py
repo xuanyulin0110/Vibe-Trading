@@ -16,8 +16,10 @@ from src.tools.factor_analysis_by_codes import (
 
 
 def _install_fake_finlab(monkeypatch: pytest.MonkeyPatch, tables: Dict[str, pd.DataFrame]) -> None:
-    """Install a fake ``finlab.data`` module so FinlabFundamentalProvider (constructed
-    fresh inside the adapter) reads canned data instead of hitting the network."""
+    """Install a fake ``finlab`` module so FinlabFundamentalProvider (constructed
+    fresh inside the adapter) logs in and reads canned data instead of hitting
+    the network. A real-looking token is required: _ensure_logged_in() raises
+    on an empty/placeholder FINLAB_API_TOKEN (see finlab_fundamentals.py)."""
 
     class _FakeData:
         @staticmethod
@@ -27,6 +29,11 @@ def _install_fake_finlab(monkeypatch: pytest.MonkeyPatch, tables: Dict[str, pd.D
     class _FakeFinlabModule:
         data = _FakeData()
 
+        @staticmethod
+        def login(token: str) -> None:
+            pass
+
+    monkeypatch.setenv("FINLAB_API_TOKEN", "fake-token-for-tests")
     monkeypatch.setitem(sys.modules, "finlab", _FakeFinlabModule)
     monkeypatch.setitem(sys.modules, "finlab.data", _FakeData)
 

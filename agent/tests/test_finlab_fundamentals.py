@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pandas as pd
 import pytest
 
@@ -14,6 +16,64 @@ def _provider_with_canned_tables(**field_key_to_wide_table: pd.DataFrame) -> Fin
     provider = FinlabFundamentalProvider()
     provider._field_cache.update(field_key_to_wide_table)
     return provider
+
+
+class TestLazyLogin:
+    """FinlabFundamentalProvider has no login of its own by default -- it used
+    to assume some other code path (typically FinlabLoader) had already
+    called finlab.login() in-process. That's false when Shioaji is the price
+    source and this provider is the only finlab touch-point (see class
+    docstring in finlab_fundamentals.py)."""
+
+    def test_init_does_not_log_in(self) -> None:
+        provider = FinlabFundamentalProvider()
+        assert provider._logged_in is False
+
+    def test_cache_hit_never_needs_login(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A pre-populated cache (this test file's usual pattern) must not
+        require a token at all -- _ensure_logged_in() only runs on a cache miss."""
+        monkeypatch.delenv("FINLAB_API_TOKEN", raising=False)
+        wide = pd.DataFrame({"2330": [1.0]}, index=pd.to_datetime(["2026-06-10"]))
+        provider = _provider_with_canned_tables(**{"monthly_revenue:當月營收": wide})
+
+        result = provider.query_fundamentals("monthly_revenue", ["2330.TW"], fields=["revenue"])
+        assert result["2330.TW"]["revenue"].iloc[0] == 1.0
+
+    @pytest.mark.parametrize("token", ["", "your-finlab-token"])
+    def test_cache_miss_with_placeholder_token_raises_instead_of_calling_finlab(
+        self, monkeypatch: pytest.MonkeyPatch, token: str,
+    ) -> None:
+        monkeypatch.setenv("FINLAB_API_TOKEN", token)
+        provider = FinlabFundamentalProvider()
+        with pytest.raises(RuntimeError, match="FINLAB_API_TOKEN is not configured"):
+            provider._field_table("monthly_revenue:當月營收")
+        assert provider._logged_in is False
+
+    def test_cache_miss_with_real_token_logs_in_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[str] = []
+
+        class _FakeData:
+            @staticmethod
+            def get(field_key: str) -> pd.DataFrame:
+                return pd.DataFrame({"2330": [1.0]})
+
+        class _FakeFinlabModule:
+            data = _FakeData()
+
+            @staticmethod
+            def login(token: str) -> None:
+                calls.append(token)
+
+        monkeypatch.setenv("FINLAB_API_TOKEN", "real-token")
+        monkeypatch.setitem(sys.modules, "finlab", _FakeFinlabModule)
+        monkeypatch.setitem(sys.modules, "finlab.data", _FakeData)
+
+        provider = FinlabFundamentalProvider()
+        provider._field_table("monthly_revenue:當月營收")
+        provider._field_table("margin_transactions:融資今日餘額")  # second, different field
+
+        assert calls == ["real-token"]  # login happens once, not once per field
+        assert provider._logged_in is True
 
 
 class TestProviderMetadata:

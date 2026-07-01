@@ -46,11 +46,13 @@ Date-index semantics differ per table -- do NOT assume they're all alike:
 
 from __future__ import annotations
 
+import os
 from typing import Dict, Iterable, Optional, Tuple
 
 import pandas as pd
 
 from backtest.loaders._symbol_utils import _strip_tw_suffix
+from backtest.loaders.finlab_loader import FINLAB_TOKEN_PLACEHOLDERS
 
 _TABLE_FIELDS: Dict[str, Dict[str, str]] = {
     "institutional": {
@@ -162,10 +164,36 @@ def _extract_tw_futures_product(code: str) -> str:
 
 
 class FinlabFundamentalProvider:
-    """Whole-market wide-table provider for finlab chip/fundamental data."""
+    """Whole-market wide-table provider for finlab chip/fundamental data.
+
+    Unlike ``FinlabLoader`` (the price loader), this provider has no login of
+    its own by construction -- it previously assumed some other code path in
+    the same process (typically the price loader, when finlab is the active
+    price source) had already called ``finlab.login()``. That assumption
+    breaks whenever Shioaji is the price source (the tw_equity/tw_futures
+    default) and a caller still requests ``fundamental_fields`` enrichment:
+    this provider would be the first and only finlab touch-point in that
+    process. An empty/placeholder token then reaching ``finlab.login()``
+    falls back to an interactive browser-auth flow that prints to stdout and
+    blocks -- the same MCP-stdio-corruption failure mode fixed in
+    ``finlab_loader.py`` (see its ``__init__`` docstring), just not
+    previously guarded here too.
+    """
 
     def __init__(self) -> None:
         self._field_cache: Dict[str, pd.DataFrame] = {}
+        self._logged_in = False
+
+    def _ensure_logged_in(self) -> None:
+        if self._logged_in:
+            return
+        token = os.getenv("FINLAB_API_TOKEN", "")
+        if token.strip() in FINLAB_TOKEN_PLACEHOLDERS:
+            raise RuntimeError("FINLAB_API_TOKEN is not configured")
+        import finlab
+
+        finlab.login(token)
+        self._logged_in = True
 
     def list_tables(self) -> list[str]:
         """Return supported fundamental tables in stable order."""
@@ -181,6 +209,7 @@ class FinlabFundamentalProvider:
     def _field_table(self, field_key: str) -> pd.DataFrame:
         """Return the whole-market wide table for one field, fetched once per instance."""
         if field_key not in self._field_cache:
+            self._ensure_logged_in()
             from finlab import data
 
             self._field_cache[field_key] = data.get(field_key)
