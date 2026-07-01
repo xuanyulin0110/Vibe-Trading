@@ -25,11 +25,13 @@ not add +8h (see MARKET_DATA.md's "Market Data Time Handling" section).
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
 import pandas as pd
 
 from backtest.loaders._shioaji_kbars import (
+    FETCH_WORKERS,
     clear_stale_shioaji_locks,
     fetch_minute_kbars_cached,
     is_supported_interval,
@@ -119,14 +121,28 @@ class DataLoader:
         # continue on a background thread for a bit after login() itself
         # returns (confirmed empirically on the futures loader -- a "Subscribe
         # or Unsubscribe ok" event leaked with only the login() call wrapped).
+        # Safe to nest under the per-call _shioaji_call_gate used inside the
+        # parallel fetch below -- the gate's lock means only one thread is
+        # ever mid-native-call at a time, so this single outer entry (held by
+        # the calling thread only) never races with it.
         with suppress_native_stdout():
             self._ensure_logged_in()
 
             result: Dict[str, pd.DataFrame] = {}
-            for code in codes:
-                df = self._fetch_one_code(code, start_date, end_date, interval)
-                if df is not None and not df.empty:
-                    result[code] = df
+            with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+                futures = {
+                    pool.submit(self._fetch_one_code, code, start_date, end_date, interval): code
+                    for code in codes
+                }
+                for future in as_completed(futures):
+                    code = futures[future]
+                    try:
+                        df = future.result()
+                    except Exception as exc:  # noqa: BLE001 - one bad code must not sink the batch
+                        print(f"[WARN] shioaji fetch failed for {code}: {exc}")
+                        continue
+                    if df is not None and not df.empty:
+                        result[code] = df
 
         return result
 

@@ -41,10 +41,12 @@ for the full design.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import datetime as dt
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator, List
@@ -75,6 +77,79 @@ def suppress_native_stdout() -> Iterator[None]:
         os.dup2(saved_fd, 1)
         os.close(devnull_fd)
         os.close(saved_fd)
+
+
+class _ShioajiCallGate:
+    """Serializes and rate-limits concurrent Shioaji native calls.
+
+    Two independent constraints collapse into one gate, both because of the
+    same underlying fact: Shioaji's account-level state (fd 1, and the
+    server-side query quota) is *process-wide*, not thread-local, so
+    parallelizing loader fetches (see fetch_minute_kbars_cached's callers)
+    needs both handled at the one place every native call actually goes
+    through:
+
+    1. ``suppress_native_stdout``'s ``os.dup2`` redirects fd 1 for the whole
+       process. Two threads concurrently entering/exiting that context race
+       on the same fd -- worse than a corrupted log line, a torn dup2/close
+       sequence can leave fd 1 permanently broken (or close a fd another
+       thread is still using), and this is exactly the fd the MCP stdio
+       transport depends on. Only one thread may be inside a suppressed
+       native call at a time.
+    2. Shioaji's documented combined 50-queries/10s limit across
+       ticks/snapshots/kbars/credit_enquires/short_stock_sources is
+       account-wide (sinotrade.github.io/zh/tutor/limit/); concurrent
+       threads must share one counter, not one each.
+
+    Both are satisfied by acquiring the same lock before every native call:
+    only one thread is ever mid-call, and while holding the lock is also the
+    natural place to enforce the shared rate window. Everything *outside* the
+    gated call -- chunk-boundary math, DataFrame construction, HTTP wait
+    inside the call itself for whichever thread currently holds the gate --
+    still overlaps across threads, so parallelizing a multi-code fetch still
+    gains real wall-clock throughput even though native calls are serialized.
+    """
+
+    def __init__(self, max_calls: int, period_seconds: float) -> None:
+        self._max_calls = max_calls
+        self._period = period_seconds
+        self._lock = threading.Lock()
+        self._call_times: collections.deque[float] = collections.deque()
+
+    @contextlib.contextmanager
+    def call(self) -> Iterator[None]:
+        with self._lock:
+            self._wait_for_slot_locked()
+            self._call_times.append(time.monotonic())
+            with suppress_native_stdout():
+                yield
+
+    def _wait_for_slot_locked(self) -> None:
+        """Block (with the gate lock held) until a call slot is free. Caller
+        must hold ``self._lock``."""
+        while True:
+            now = time.monotonic()
+            while self._call_times and now - self._call_times[0] > self._period:
+                self._call_times.popleft()
+            if len(self._call_times) < self._max_calls:
+                return
+            time.sleep(self._period - (now - self._call_times[0]))
+
+
+#: Conservative margin under Shioaji's documented 50-queries/10s combined
+#: limit (ticks/snapshots/kbars/credit_enquires/short_stock_sources) -- 40
+#: leaves headroom for other concurrent usage of the same account (e.g. a
+#: live quote check running alongside a backtest) that this process can't see.
+_shioaji_call_gate = _ShioajiCallGate(max_calls=40, period_seconds=10.0)
+
+#: Concurrent per-code fetch workers, shared by both Shioaji loaders' fetch().
+#: Native Shioaji calls stay serialized+rate-limited by _shioaji_call_gate
+#: regardless of this count -- more workers only buys overlap on the
+#: Python-level work (chunk math, DataFrame construction) and HTTP wait, not
+#: more actual throughput past the account-wide rate limit. Matches the
+#: precedent count alpha_bench_tool.py already uses for concurrent Tushare
+#: fetches.
+FETCH_WORKERS = 5
 
 #: Lock files older than this are assumed abandoned by a dead/killed process
 #: rather than held by a genuinely in-progress download (which finishes in
@@ -167,7 +242,7 @@ def fetch_minute_kbars(api: Any, contract: Any, start_date: str, end_date: str) 
     chunks: List[pd.DataFrame] = []
     for chunk_start, chunk_end in date_chunks(start_date, end_date):
         try:
-            with suppress_native_stdout():
+            with _shioaji_call_gate.call():
                 kbars = api.kbars(contract, start=chunk_start, end=chunk_end)
         except Exception as exc:  # noqa: BLE001 - one bad chunk should not kill the fetch
             print(f"[WARN] shioaji kbars failed for {chunk_start}..{chunk_end}: {exc}")
@@ -303,7 +378,7 @@ def _quota_has_headroom(api: Any) -> bool:
     problem.
     """
     try:
-        with suppress_native_stdout():
+        with _shioaji_call_gate.call():
             usage = api.usage()
         return usage.remaining_bytes > 0
     except Exception:  # noqa: BLE001
