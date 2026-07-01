@@ -63,7 +63,17 @@ _UNIVERSE_TAG = {
     "csi300": "equity_cn",
     "sp500": "equity_us",
     "btc-usdt": "crypto",
+    "tw50": "equity_tw",
 }
+
+# TWSE blue-chip fallback list (mirrors the csi300 fallback pattern) -- finlab
+# has no index-membership dataset as of the time this was written (confirmed
+# via finlab.data.search() for "台灣50"/"0050"/"index_membership"/"指數成分").
+_TW50_FALLBACK_CODES = (
+    "2330", "2317", "2454", "2412", "2882", "2881", "1301", "1303", "2891",
+    "2886", "3008", "2308", "2303", "1216", "2002", "2884", "5880", "2892",
+    "2885", "3045", "2395", "1101", "2207", "2379", "6505",
+)
 
 
 def _parse_period(period: str) -> tuple[str, str]:
@@ -121,6 +131,8 @@ def _load_universe_panel(
         panel = _load_sp500_panel(start, end)
     elif universe == "btc-usdt":
         panel = _load_btc_panel(start, end)
+    elif universe == "tw50":
+        panel = _load_tw_panel(start, end)
     else:  # pragma: no cover — guarded above
         raise ValueError(f"unhandled universe {universe!r}")
 
@@ -419,9 +431,19 @@ def _load_btc_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
 
 
 def _wide_from_fetched(
-    fetched: dict[str, pd.DataFrame], *, include_amount: bool
+    fetched: dict[str, pd.DataFrame],
+    *,
+    include_amount: bool,
+    extra_fields: tuple[str, ...] = (),
 ) -> dict[str, pd.DataFrame]:
-    """Stack per-code OHLCV frames into wide panels keyed by field."""
+    """Stack per-code OHLCV(+extra) frames into wide panels keyed by field.
+
+    ``extra_fields`` picks up any additional columns present on the per-code
+    frames beyond OHLCV(+amount) -- e.g. fundamental/chip columns already
+    merged onto the price frames by an ``enrich_price_frames_with_*`` call
+    (see ``_load_tw_panel``). A field absent from every code's frame is
+    silently omitted from the panel (matches the existing OHLCV behaviour).
+    """
     if not fetched:
         return {}
     all_dates = sorted(set().union(*(df.index for df in fetched.values())))
@@ -432,6 +454,7 @@ def _wide_from_fetched(
     fields = ["open", "high", "low", "close", "volume"]
     if include_amount:
         fields.append("amount")
+    fields.extend(extra_fields)
 
     panel: dict[str, pd.DataFrame] = {}
     for field in fields:
@@ -446,6 +469,51 @@ def _wide_from_fetched(
         wide = wide.reindex(index=date_index, columns=all_codes)
         panel[field] = wide.astype(float)
     return panel
+
+
+def _load_tw_panel(start: str, end: str) -> dict[str, pd.DataFrame]:
+    """TW equity blue-chip panel via the ``tw_equity`` fallback chain
+    (Shioaji primary, finlab fallback), enriched with 三大法人/融資融券/月營收
+    chip & fundamental columns from finlab so ``tw_alpha`` zoo factors have
+    their required ``extras`` available.
+
+    Enrichment reuses ``enrich_price_frames_with_finlab_fundamentals`` (the
+    same point-in-time-safe merge the backtest engine's ``fundamental_fields``
+    config path uses) rather than hand-rolling a second merge -- the PIT
+    semantics (disclosure-date alignment, no look-ahead) only need to be
+    correct in one place.
+    """
+    from backtest.loaders.registry import resolve_loader
+
+    codes = [f"{code}.TW" for code in _TW50_FALLBACK_CODES]
+    loader = resolve_loader("tw_equity")
+    fetched = _retry(lambda: loader.fetch(codes, start, end)) or {}
+    if not fetched:
+        return {}
+
+    from backtest.loaders.finlab_fundamentals import (
+        FinlabFundamentalProvider,
+        enrich_price_frames_with_finlab_fundamentals,
+    )
+
+    fields_by_table = {
+        "institutional": ["foreign_net", "trust_net"],
+        "margin": ["margin_usage_rate"],
+        "monthly_revenue": ["revenue_yoy_pct"],
+    }
+    try:
+        enriched = enrich_price_frames_with_finlab_fundamentals(
+            fetched, FinlabFundamentalProvider(), fields_by_table,
+        )
+    except Exception as exc:  # noqa: BLE001 — chip data is best-effort; OHLCV-only alphas still run
+        logger.warning("tw50: fundamentals enrichment failed (%s); extras unavailable", exc)
+        enriched = fetched
+
+    extra_fields = (
+        "institutional_foreign_net", "institutional_trust_net",
+        "margin_margin_usage_rate", "monthly_revenue_revenue_yoy_pct",
+    )
+    return _wide_from_fetched(enriched, include_amount=False, extra_fields=extra_fields)
 
 
 def _retry(fn, *, tries: int = 3, base_delay: float = 1.0):
