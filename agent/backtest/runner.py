@@ -299,6 +299,7 @@ def _validate_signal_engine_class(engine_cls) -> None:
 _MARKET_TO_SOURCE = {
     "a_share": "tushare",
     "tw_equity": "shioaji",
+    "tw_futures": "shioaji_futures",
     "us_equity": "yfinance",
     "hk_equity": "yfinance",
     "crypto": "okx",
@@ -576,6 +577,11 @@ def _create_market_engine(source: str, config: dict, codes: List[str]):
     if "forex" in markets:
         from backtest.engines.forex import ForexEngine
         return ForexEngine(config)
+
+    # Taiwan futures routing (TAIFEX index futures, .TWF suffix)
+    if "tw_futures" in markets:
+        from backtest.engines.tw_futures import TWFuturesEngine
+        return TWFuturesEngine(config)
 
     # Taiwan equity routing
     if "tw_equity" in markets:

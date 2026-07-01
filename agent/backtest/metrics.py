@@ -19,7 +19,7 @@ from backtest.models import TradeRecord
 # sessions are marginally longer (~330 min) — an approximation in line with the
 # rest of this annualisation table; the key fix is that intraday mootdx/futu no
 # longer fall back to the bars_per_day=1 default, which mis-annualised vol/Sharpe.
-_TRADING_DAYS = {"tushare": 252, "yfinance": 252, "okx": 365, "akshare": 252, "ccxt": 365, "mootdx": 252, "futu": 252, "finlab": 252, "shioaji": 252}
+_TRADING_DAYS = {"tushare": 252, "yfinance": 252, "okx": 365, "akshare": 252, "ccxt": 365, "mootdx": 252, "futu": 252, "finlab": 252, "shioaji": 252, "shioaji_futures": 252}
 _BARS_PER_DAY = {
     "1m":  {"tushare": 240, "okx": 1440, "yfinance": 390, "akshare": 240, "ccxt": 1440, "mootdx": 240, "futu": 240},
     "5m":  {"tushare": 48,  "okx": 288,  "yfinance": 78,  "akshare": 48,  "ccxt": 288,  "mootdx": 48,  "futu": 48},

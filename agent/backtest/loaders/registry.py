@@ -50,6 +50,7 @@ VALID_SOURCES: set[str] = {
     "fmp",
     "finlab",
     "shioaji",
+    "shioaji_futures",
     "local",
     "auto",
 }
@@ -96,6 +97,7 @@ def _ensure_registered() -> None:
         "backtest.loaders.fmp_loader",
         "backtest.loaders.finlab_loader",
         "backtest.loaders.shioaji_loader",
+        "backtest.loaders.shioaji_futures_loader",
         "backtest.loaders.local_loader",
     ]
     import importlib
@@ -128,6 +130,7 @@ _NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset({"local"})
 FALLBACK_CHAINS: dict[str, list[str]] = {
     "a_share":   ["tencent", "mootdx", "eastmoney", "baostock", "akshare", "tushare", "local"],
     "tw_equity": ["shioaji", "finlab", "local"],
+    "tw_futures": ["shioaji_futures", "local"],
     "us_equity": ["yahoo", "stooq", "sina", "eastmoney", "yfinance", "tiingo", "fmp", "finnhub", "alphavantage", "akshare", "local"],
     "hk_equity": ["eastmoney", "yahoo", "futu", "yfinance", "akshare", "local"],
     "crypto":    ["okx", "ccxt", "yfinance", "local"],

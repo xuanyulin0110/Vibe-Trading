@@ -55,6 +55,7 @@ class MarketDataTool(BaseTool):
                     "fmp",
                     "finlab",
                     "shioaji",
+                    "shioaji_futures",
                 ],
                 "description": (
                     "Data source. 'auto' detects from symbol format with fallback. "
@@ -63,7 +64,8 @@ class MarketDataTool(BaseTool):
                     "(China A-shares), stooq (global EOD). Key-gated REST: tushare "
                     "(China A-shares), finnhub/alphavantage/tiingo/fmp (US/global), "
                     "shioaji (Taiwan equities, e.g. 2330.TW -- primary), finlab "
-                    "(Taiwan equities -- fallback when shioaji is unavailable)."
+                    "(Taiwan equities -- fallback when shioaji is unavailable), "
+                    "shioaji_futures (Taiwan index futures, e.g. TXFR1.TWF)."
                 ),
                 "default": "auto",
             },

@@ -598,24 +598,6 @@ def test_shoonya_service_unconfigured(monkeypatch, tmp_path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_shioaji_clear_stale_locks_removes_old_not_recent(tmp_path, monkeypatch) -> None:
-    import os
-    import time
-
-    monkeypatch.setenv("SJ_HOME_PATH", str(tmp_path))
-    old_lock = tmp_path / "contracts-1.5.4-STK-TW.parquet.lock"
-    recent_lock = tmp_path / "contracts-1.5.4-FUT-TW.parquet.lock"
-    old_lock.touch()
-    recent_lock.touch()
-    old_time = time.time() - 999
-    os.utime(old_lock, (old_time, old_time))
-
-    sj._clear_stale_shioaji_locks(max_age_seconds=120.0)
-
-    assert not old_lock.exists()
-    assert recent_lock.exists()
-
-
 def test_shioaji_simulation_flag_mapping() -> None:
     assert sj.ShioajiConfig(profile="paper").simulation is True
     assert sj.ShioajiConfig(profile="live-readonly").simulation is False

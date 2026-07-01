@@ -22,6 +22,7 @@ _SOURCE_PATTERNS = [
     (re.compile(r"^local:", re.I), "local"),
     (re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.I), "tencent"),
     (re.compile(r"^\d{4,6}\.TWO?$", re.I), "shioaji"),
+    (re.compile(r"^[A-Z]{2,4}[A-Z0-9]*\.TWF$", re.I), "shioaji_futures"),
     (re.compile(r"^[A-Z]+\.US$", re.I), "yahoo"),
     (re.compile(r"^\d{3,5}\.HK$", re.I), "yahoo"),
     (re.compile(r"^[A-Z]+-USDT$", re.I), "okx"),

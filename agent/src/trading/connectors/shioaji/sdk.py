@@ -21,46 +21,21 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 import pandas as pd
 
+from backtest.loaders._shioaji_kbars import (
+    clear_stale_shioaji_locks,
+    fetch_minute_kbars,
+    is_supported_interval,
+    resample_kbars,
+)
 from src.config.paths import get_runtime_root
 
 CONFIG_FILENAME = "shioaji.json"
-
-#: Lock files older than this are assumed abandoned by a dead/killed process
-#: rather than held by a genuinely in-progress download -- see
-#: ``_clear_stale_shioaji_locks`` (same fix as ``backtest/loaders/shioaji_loader.py``,
-#: duplicated rather than cross-imported since trading/ and backtest/ are
-#: separate subsystems by repo convention).
-_STALE_LOCK_SECONDS = 120.0
-
-
-def _clear_stale_shioaji_locks(max_age_seconds: float = _STALE_LOCK_SECONDS) -> None:
-    """Remove stale Shioaji contract-cache lock files before login.
-
-    Confirmed empirically: ``shioaji.Shioaji().login()`` writes a
-    ``contracts-*.parquet.lock`` file per contract type into ``SJ_HOME_PATH``
-    (default ``~/.shioaji``) during the contract download and never removes
-    it afterward, even on a clean process exit. A later login then hangs
-    indefinitely waiting on a lock no live process holds -- reproduced
-    repeatedly in testing. Only locks older than ``max_age_seconds`` are
-    removed, so a genuinely concurrent in-progress download is not disturbed.
-    """
-    home = Path(os.environ.get("SJ_HOME_PATH") or (Path.home() / ".shioaji"))
-    if not home.is_dir():
-        return
-    now = time.time()
-    for lock_file in home.glob("*.lock"):
-        try:
-            if now - lock_file.stat().st_mtime > max_age_seconds:
-                lock_file.unlink()
-        except OSError:
-            pass
 
 #: Profiles this connector understands and their ``simulation`` flag.
 PROFILE_SIMULATION = {
@@ -279,26 +254,23 @@ def get_open_orders(
 
 
 def get_quote(symbol: str, *, config: ShioajiConfig | None = None, **_: Any) -> dict[str, Any]:
-    """Fetch a real-time top-of-book snapshot for ``symbol`` (e.g. ``2330.TW``)."""
+    """Fetch a real-time top-of-book snapshot for ``symbol``.
+
+    Accepts TW equities (``2330.TW``) and TAIFEX index futures
+    (``TXFR1.TWF``); routing is by suffix (see ``_resolve_contract``).
+    """
     cfg = config or load_config()
     api = _login(cfg)
-    stock_id = _strip_tw_suffix(symbol)
-    contract = api.Contracts.Stocks[stock_id]
+    contract = _resolve_contract(api, symbol)
     if contract is None:
         _logout_best_effort(api)
-        return {"status": "error", "error": f"no Shioaji contract for {symbol} (stock_id={stock_id})"}
+        return {"status": "error", "error": f"no Shioaji contract for {symbol}"}
 
     snapshots = _safe_call(api, "snapshots", [contract]) or []
     _logout_best_effort(api)
     if not snapshots:
         return {"status": "error", "error": f"no snapshot returned for {symbol}"}
     return {"status": "ok", "symbol": symbol, "quote": _snapshot_to_dict(snapshots[0])}
-
-
-#: Canonical period token -> minutes per bar (None = use raw 1-minute bars).
-_PERIOD_MINUTES = {
-    "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": None,
-}
 
 
 def get_historical_bars(
@@ -312,33 +284,29 @@ def get_historical_bars(
     """Fetch historical OHLCV bars for ``symbol`` via Shioaji K-bars, resampled to ``period``.
 
     Shioaji's ``kbars()`` only returns 1-minute bars and caps each request at
-    29 calendar days (see ``backtest/loaders/shioaji_loader.py`` for the same
-    chunking rule used in backtesting); this connector fetches the last
-    ``limit`` calendar days in chunks and resamples up if ``period`` is
-    coarser than 1 minute.
+    29 calendar days; the shared ``backtest.loaders._shioaji_kbars`` helper
+    handles the chunking and resampling (same code path the backtest loaders
+    use). ``period`` accepts 1m/5m/15m/30m/1h/4h/1d.
     """
     cfg = config or load_config()
     api = _login(cfg)
-    stock_id = _strip_tw_suffix(symbol)
-    contract = api.Contracts.Stocks[stock_id]
+    contract = _resolve_contract(api, symbol)
     if contract is None:
         _logout_best_effort(api)
-        return {"status": "error", "error": f"no Shioaji contract for {symbol} (stock_id={stock_id})"}
+        return {"status": "error", "error": f"no Shioaji contract for {symbol}"}
 
-    minutes = _PERIOD_MINUTES.get(period.strip())
-    if period.strip() not in _PERIOD_MINUTES:
+    if not is_supported_interval(period):
         _logout_best_effort(api)
         return {"status": "error", "error": f"unsupported period: {period!r}"}
 
     end = dt.date.today()
     start = end - dt.timedelta(days=max(int(limit), 1) + 5)  # pad for weekends/holidays
-    minute_df = _fetch_minute_kbars(api, contract, start.isoformat(), end.isoformat())
+    minute_df = fetch_minute_kbars(api, contract, start.isoformat(), end.isoformat())
     _logout_best_effort(api)
     if minute_df.empty:
         return {"status": "ok", "symbol": symbol, "period": period, "bars": []}
 
-    bars_df = minute_df if minutes is None and period.strip() != "1d" else _resample(minute_df, period.strip())
-    bars_df = bars_df.tail(int(limit))
+    bars_df = resample_kbars(minute_df, period).tail(int(limit))
     return {
         "status": "ok",
         "symbol": symbol,
@@ -374,7 +342,7 @@ def _login(cfg: ShioajiConfig):
     if missing:
         raise ShioajiConfigError(f"Shioaji connector not configured: missing {', '.join(missing)}.")
     sj = _require_shioaji()
-    _clear_stale_shioaji_locks()
+    clear_stale_shioaji_locks()
     api = sj.Shioaji(simulation=cfg.simulation)
     api.login(api_key=cfg.api_key, secret_key=cfg.secret_key, contracts_timeout=cfg.timeout)
     return api
@@ -394,32 +362,32 @@ def _strip_tw_suffix(code: str) -> str:
     return code.split(".")[0]
 
 
-def _fetch_minute_kbars(api: Any, contract: Any, start_date: str, end_date: str) -> pd.DataFrame:
-    """Pull 1-minute K-bars in <=29-day chunks (Shioaji's per-request window limit)."""
-    chunks: list[pd.DataFrame] = []
-    cur = dt.date.fromisoformat(start_date)
-    last = dt.date.fromisoformat(end_date)
-    step = dt.timedelta(days=28)
-    while cur <= last:
-        chunk_end = min(cur + step, last)
-        kbars = _safe_call(api, "kbars", contract, start=cur.isoformat(), end=chunk_end.isoformat())
-        if kbars is not None and kbars.ts:
-            chunks.append(pd.DataFrame({
-                "open": kbars.Open, "high": kbars.High, "low": kbars.Low,
-                "close": kbars.Close, "volume": kbars.Volume,
-            }, index=pd.to_datetime(kbars.ts)))
-        cur = chunk_end + dt.timedelta(days=1)
-    if not chunks:
-        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-    return pd.concat(chunks).sort_index()
+#: Known TAIFEX index-futures product categories under ``Contracts.Futures``.
+_TW_FUTURES_PRODUCTS = ("TXF", "MXF", "TMF")
 
 
-def _resample(minute_df: pd.DataFrame, period: str) -> pd.DataFrame:
-    rule = "1D" if period == "1d" else f"{_PERIOD_MINUTES[period]}min"
-    agg = minute_df.resample(rule).agg({
-        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
-    })
-    return agg.dropna(subset=["open", "high", "low", "close"])
+def _resolve_contract(api: Any, symbol: str):
+    """Resolve a symbol to a Shioaji contract, routing by suffix.
+
+    ``*.TWF`` -> ``api.Contracts.Futures.<PRODUCT>.<contract>`` (e.g.
+    ``TXFR1.TWF`` -> ``Futures.TXF.TXFR1``); anything else -> the equity
+    lookup ``api.Contracts.Stocks[stock_id]``. Returns ``None`` when the
+    contract cannot be found.
+    """
+    if symbol.upper().endswith(".TWF"):
+        contract_code = _strip_tw_suffix(symbol).upper()
+        product = next((p for p in _TW_FUTURES_PRODUCTS if contract_code.startswith(p)), contract_code[:3])
+        category = getattr(api.Contracts.Futures, product, None)
+        if category is None:
+            return None
+        contract = getattr(category, contract_code, None)
+        if contract is None:
+            try:
+                contract = category[contract_code]
+            except Exception:
+                contract = None
+        return contract
+    return api.Contracts.Stocks[_strip_tw_suffix(symbol)]
 
 
 def _public_config(cfg: ShioajiConfig) -> dict[str, Any]:

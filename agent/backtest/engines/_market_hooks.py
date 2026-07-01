@@ -31,6 +31,10 @@ _MARKET_PATTERNS = [
     # unsuffixed finlab-style code must be normalized to one of these before
     # reaching market detection.
     (re.compile(r"^\d{4,6}\.TWO?$", re.I), "tw_equity"),
+    # Taiwan index futures (TAIFEX): product(+continuation/month).TWF
+    # (e.g. TXFR1.TWF, MXFR2.TWF, TMF202503.TWF). The unique .TWF exchange
+    # suffix keeps these off the global/China futures patterns below.
+    (re.compile(r"^[A-Z]{2,4}[A-Z0-9]*\.TWF$", re.I), "tw_futures"),
     (re.compile(r"^[A-Z]+\.US$", re.I), "us_equity"),
     (re.compile(r"^\d{3,5}\.HK$", re.I), "hk_equity"),
     (re.compile(r"^[A-Z]+-USDT$", re.I), "crypto"),
@@ -75,8 +79,8 @@ def _detect_market(code: str) -> str:
         code: Ticker / symbol string.
 
     Returns:
-        Market type (a_share/tw_equity/us_equity/hk_equity/crypto/futures/forex);
-        unknown defaults to ``a_share``.
+        Market type (a_share/tw_equity/tw_futures/us_equity/hk_equity/crypto/
+        futures/forex); unknown defaults to ``a_share``.
     """
     for pattern, market in _MARKET_PATTERNS:
         if pattern.match(code):
@@ -113,6 +117,16 @@ def _is_china_futures(code: str) -> bool:
         if product in _CN_FUTURES_PRODUCTS:
             return True
     return False
+
+
+def _is_tw_futures(code: str) -> bool:
+    """Check whether a symbol is a Taiwan index futures contract (``.TWF`` suffix).
+
+    Mirrors ``_is_china_futures`` as the discriminator the runner uses to route
+    a ``futures`` symbol to the right engine. The ``.TWF`` exchange suffix is
+    unique to this project's TAIFEX convention (e.g. ``TXFR1.TWF``).
+    """
+    return code.upper().endswith(".TWF")
 
 
 def _detect_submarket(codes: List[str]) -> str:
