@@ -113,11 +113,16 @@ class TushareFundamentalProvider:
 
     def __init__(self, api: Any | None = None) -> None:
         if api is None:
-            import tushare as ts
-
             token = os.getenv("TUSHARE_TOKEN", "").strip()
             if token in TUSHARE_TOKEN_PLACEHOLDERS:
-                token = ""
+                # Letting an empty/placeholder token reach ts.pro_api() prints
+                # a Chinese "please configure your token" notice straight to
+                # stdout before raising a raw Exception -- fatal for an MCP
+                # stdio caller (stdout must carry only JSON-RPC) and unhelpful
+                # for a CLI caller either way. Fail clean instead.
+                raise RuntimeError("TUSHARE_TOKEN is not configured")
+            import tushare as ts
+
             api = ts.pro_api(token)
         self.api = api
 

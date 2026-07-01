@@ -433,12 +433,16 @@ def backtest(run_dir: str) -> str:
     - config.json: backtest configuration (source, codes, dates, etc.)
     - code/signal_engine.py: strategy signal generation code
 
-    Supported data sources (set in config.json "source" field):
+    Supported data sources (set in config.json "source" field) -- not
+    exhaustive, see backtest.loaders.registry.VALID_SOURCES for the full list:
     - "yfinance": HK/US equities (free, no API key needed)
     - "okx": cryptocurrency (free, no API key needed)
     - "tushare": China A-shares (requires TUSHARE_TOKEN env var)
     - "akshare": A-shares, US, HK, futures, forex (free, no API key)
     - "ccxt": crypto from 100+ exchanges (free, no API key)
+    - "finlab": Taiwan equities, e.g. 2330.TW (requires FINLAB_API_TOKEN env var)
+    - "shioaji": Taiwan equities, e.g. 2330.TW -- primary TW source (requires SJ_API_KEY/SJ_SEC_KEY)
+    - "shioaji_futures": Taiwan index futures (TXF/MXF/TMF), e.g. TXFR1.TWF (requires SJ_API_KEY/SJ_SEC_KEY)
     - "auto": auto-detect based on symbol format (with fallback)
 
     Returns metrics (Sharpe, return, drawdown, etc.) and artifact paths.
@@ -466,32 +470,33 @@ def factor_analysis(
     top_n: int = 10,
     bottom_n: int = 10,
 ) -> str:
-    """Compute factor IC/IR analysis and layered backtest for a cross-section of stocks.
+    """Compute factor IC/IR analysis and a top/bottom-N return spread for a cross-section of codes.
 
     Analyzes factor predictive power using Spearman rank IC, IR (IC/std),
-    and top/bottom quintile return spreads.
+    and the return spread between the top-N and bottom-N ranked codes each day.
 
     Args:
-        codes: List of stock codes (e.g. ["000001.SZ", "600519.SH"]).
-        factor_name: Factor column name in daily_basic data (e.g. "pe_ttm", "pb", "turnover_rate").
+        codes: List of codes (e.g. ["000001.SZ", "600519.SH"] or ["2330.TW", "2317.TW"]).
+        factor_name: Alias name from a fundamentals table for the codes' market
+            (e.g. "roe", "netprofit_margin" for A-share via Tushare; "roe",
+            "revenue_growth", "foreign_net" for TW equity via finlab). The error
+            response lists all available "table.field" names when a name isn't found.
         start_date: Start date (YYYY-MM-DD).
         end_date: End date (YYYY-MM-DD).
-        source: Data source ("tushare", "yfinance", "auto").
-        top_n: Number of top-ranked stocks per period.
-        bottom_n: Number of bottom-ranked stocks per period.
+        source: Data source for prices ("auto" detects per code).
+        top_n: Number of top-ranked codes per day for the spread.
+        bottom_n: Number of bottom-ranked codes per day for the spread.
     """
-    registry = _get_registry()
-    return registry.execute(
-        "factor_analysis",
-        {
-            "codes": codes,
-            "factor_name": factor_name,
-            "start_date": start_date,
-            "end_date": end_date,
-            "source": source,
-            "top_n": top_n,
-            "bottom_n": bottom_n,
-        },
+    from src.tools.factor_analysis_by_codes import run_factor_analysis_by_codes
+
+    return run_factor_analysis_by_codes(
+        codes=codes,
+        factor_name=factor_name,
+        start_date=start_date,
+        end_date=end_date,
+        source=source,
+        top_n=top_n,
+        bottom_n=bottom_n,
     )
 
 
@@ -1045,7 +1050,8 @@ def get_market_data(
 ) -> str:
     """Fetch OHLCV market data for stocks, crypto, or mixed symbols.
 
-    Supported sources:
+    Supported sources -- not exhaustive, see
+    backtest.loaders.registry.VALID_SOURCES for the full list:
     - "yfinance": HK/US equities (free, e.g. AAPL.US, 700.HK)
     - "okx": cryptocurrency (free, e.g. BTC-USDT, ETH-USDT)
     - "tushare": China A-shares (requires TUSHARE_TOKEN, e.g. 000001.SZ)
@@ -1053,13 +1059,17 @@ def get_market_data(
     - "tencent": China A-shares via Tencent Finance API (e.g. 000001.SZ, 601595.SH)
     - "akshare": A-shares, US, HK, futures, forex (free, e.g. 000001.SZ, AAPL.US)
     - "ccxt": crypto from 100+ exchanges (free, e.g. BTC/USDT)
+    - "finlab": Taiwan equities (requires FINLAB_API_TOKEN, e.g. 2330.TW)
+    - "shioaji": Taiwan equities -- primary TW source (requires SJ_API_KEY/SJ_SEC_KEY, e.g. 2330.TW)
+    - "shioaji_futures": Taiwan index futures TXF/MXF/TMF (requires SJ_API_KEY/SJ_SEC_KEY, e.g. TXFR1.TWF)
     - "auto": auto-detect based on symbol format (with fallback)
 
     Args:
-        codes: List of symbols (e.g. ["AAPL.US", "BTC-USDT", "000001.SZ"]).
+        codes: List of symbols (e.g. ["AAPL.US", "BTC-USDT", "000001.SZ", "2330.TW", "TXFR1.TWF"]).
         start_date: Start date (YYYY-MM-DD).
         end_date: End date (YYYY-MM-DD).
-        source: Data source ("auto", "yfinance", "okx", "tushare", "baostock", "tencent", "akshare", "ccxt").
+        source: Data source ("auto", "yfinance", "okx", "tushare", "baostock", "tencent",
+            "akshare", "ccxt", "finlab", "shioaji", "shioaji_futures").
         interval: Bar size (1m/5m/15m/30m/1H/4H/1D, default "1D").
         max_rows: Per-symbol row cap (default 250) so the response stays
             within the MCP token budget. A symbol exceeding it returns an

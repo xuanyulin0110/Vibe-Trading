@@ -32,6 +32,7 @@ from backtest.loaders._shioaji_kbars import (
     fetch_minute_kbars,
     is_supported_interval,
     resample_kbars,
+    suppress_native_stdout,
 )
 from src.config.paths import get_runtime_root
 
@@ -343,8 +344,9 @@ def _login(cfg: ShioajiConfig):
         raise ShioajiConfigError(f"Shioaji connector not configured: missing {', '.join(missing)}.")
     sj = _require_shioaji()
     clear_stale_shioaji_locks()
-    api = sj.Shioaji(simulation=cfg.simulation)
-    api.login(api_key=cfg.api_key, secret_key=cfg.secret_key, contracts_timeout=cfg.timeout)
+    with suppress_native_stdout():
+        api = sj.Shioaji(simulation=cfg.simulation)
+        api.login(api_key=cfg.api_key, secret_key=cfg.secret_key, contracts_timeout=cfg.timeout)
     return api
 
 
@@ -353,7 +355,8 @@ def _logout_best_effort(api: Any) -> None:
     wind down promptly instead of lingering past this call's return -- a
     best-effort cleanup, never raises."""
     try:
-        api.logout()
+        with suppress_native_stdout():
+            api.logout()
     except Exception:  # noqa: BLE001 - logout failure must never mask a real result
         pass
 
@@ -496,4 +499,5 @@ def _safe_call(obj: Any, name: str, *args: Any, **kwargs: Any) -> Any:
     fn = getattr(obj, name, None)
     if fn is None:
         return None
-    return fn(*args, **kwargs)
+    with suppress_native_stdout():
+        return fn(*args, **kwargs)

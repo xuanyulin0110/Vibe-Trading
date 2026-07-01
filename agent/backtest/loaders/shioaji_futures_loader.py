@@ -27,6 +27,7 @@ from backtest.loaders._shioaji_kbars import (
     fetch_minute_kbars,
     is_supported_interval,
     resample_kbars,
+    suppress_native_stdout,
 )
 from backtest.loaders.base import cached_loader_fetch, validate_date_range, validate_ohlc
 from backtest.loaders.registry import register
@@ -78,12 +79,13 @@ class DataLoader:
 
         clear_stale_shioaji_locks()
         production = os.getenv("SJ_PRODUCTION", "false").strip().lower() in ("1", "true", "yes")
-        api = sj.Shioaji(simulation=not production)
-        api.login(
-            api_key=os.environ["SJ_API_KEY"],
-            secret_key=os.environ["SJ_SEC_KEY"],
-            contracts_timeout=10000,
-        )
+        with suppress_native_stdout():
+            api = sj.Shioaji(simulation=not production)
+            api.login(
+                api_key=os.environ["SJ_API_KEY"],
+                secret_key=os.environ["SJ_SEC_KEY"],
+                contracts_timeout=10000,
+            )
         self.api = api
 
     def fetch(
@@ -112,24 +114,30 @@ class DataLoader:
             print(f"[WARN] shioaji futures loader: unsupported interval {interval!r}")
             return {}
 
-        self._ensure_logged_in()
+        # Suppress for the whole login+fetch lifetime, not just around the
+        # login() call: Shioaji's native contract-subscription handshake
+        # continues on a background thread for a bit after login() itself
+        # returns (confirmed empirically -- a "Subscribe or Unsubscribe ok"
+        # event still leaked to stdout with only the login() call wrapped).
+        with suppress_native_stdout():
+            self._ensure_logged_in()
 
-        result: Dict[str, pd.DataFrame] = {}
-        for code in codes:
-            def _fetch_one(code: str = code) -> Optional[pd.DataFrame]:
-                return self._fetch_one_code(code, start_date, end_date, interval)
+            result: Dict[str, pd.DataFrame] = {}
+            for code in codes:
+                def _fetch_one(code: str = code) -> Optional[pd.DataFrame]:
+                    return self._fetch_one_code(code, start_date, end_date, interval)
 
-            df = cached_loader_fetch(
-                source=self.name,
-                symbol=code,
-                timeframe=interval,
-                start_date=start_date,
-                end_date=end_date,
-                fields=None,
-                fetch=_fetch_one,
-            )
-            if df is not None and not df.empty:
-                result[code] = df
+                df = cached_loader_fetch(
+                    source=self.name,
+                    symbol=code,
+                    timeframe=interval,
+                    start_date=start_date,
+                    end_date=end_date,
+                    fields=None,
+                    fetch=_fetch_one,
+                )
+                if df is not None and not df.empty:
+                    result[code] = df
 
         return result
 

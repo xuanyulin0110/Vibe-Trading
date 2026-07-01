@@ -13,17 +13,49 @@ copy-pasted per loader (see plan Phase 2b/2c).
 Market-data timestamps from Shioaji are already Taiwan wall-clock time -- do
 not add +8h (see MARKET_DATA.md's "Market Data Time Handling" in the bundled
 Shioaji skill).
+
+Also hosts ``suppress_native_stdout`` (see plan Phase 3): Shioaji's connection
+layer is a compiled extension (``shioaji/_core.abi3.so``), not pure Python, so
+its "Response Code / Event Code / Session up" connection logs write straight
+to the process's stdout file descriptor -- they can't be silenced via Python's
+``logging`` module. That's harmless for a CLI backtest run, but fatal for the
+MCP server: MCP stdio requires stdout to carry *only* JSON-RPC frames, and
+these lines corrupt that stream for every TW equity/futures MCP tool call
+(confirmed empirically -- a real ``mcp`` Python client's stdio reader logged
+"Failed to parse JSONRPC message from server" for each such line). Every
+Shioaji SDK call site (login, kbars, quotes, account/position/trade queries)
+must run inside this context manager.
 """
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import os
 import time
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Iterator, List
 
 import pandas as pd
+
+
+@contextlib.contextmanager
+def suppress_native_stdout() -> Iterator[None]:
+    """Redirect the stdout file descriptor away during a Shioaji SDK call.
+
+    Shioaji's native extension writes connection/event logs directly to fd 1,
+    bypassing ``sys.stdout`` reassignment -- only an OS-level fd redirect
+    catches it. Restores the original fd 1 afterward even on exception.
+    """
+    saved_fd = os.dup(1)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull_fd, 1)
+        yield
+    finally:
+        os.dup2(saved_fd, 1)
+        os.close(devnull_fd)
+        os.close(saved_fd)
 
 #: Lock files older than this are assumed abandoned by a dead/killed process
 #: rather than held by a genuinely in-progress download (which finishes in
@@ -116,7 +148,8 @@ def fetch_minute_kbars(api: Any, contract: Any, start_date: str, end_date: str) 
     chunks: List[pd.DataFrame] = []
     for chunk_start, chunk_end in date_chunks(start_date, end_date):
         try:
-            kbars = api.kbars(contract, start=chunk_start, end=chunk_end)
+            with suppress_native_stdout():
+                kbars = api.kbars(contract, start=chunk_start, end=chunk_end)
         except Exception as exc:  # noqa: BLE001 - one bad chunk should not kill the fetch
             print(f"[WARN] shioaji kbars failed for {chunk_start}..{chunk_end}: {exc}")
             continue

@@ -53,12 +53,32 @@ class DataLoader:
         return os.getenv("FINLAB_API_TOKEN", "").strip() not in FINLAB_TOKEN_PLACEHOLDERS
 
     def __init__(self) -> None:
-        """Log in to finlab with the configured API token."""
+        """Defer login until first use (see ``_ensure_logged_in``).
+
+        ``backtest.loaders.registry.get_loader_cls_with_fallback`` constructs a
+        throwaway instance just to call ``is_available()``. Logging in eagerly
+        here meant that probe instance -- and every other construction, even
+        with no token configured -- called ``finlab.login()`` unconditionally.
+        With an empty/placeholder token, finlab's SDK falls back to an
+        interactive browser-auth flow that prints "Opening browser for
+        login..." to stdout and blocks waiting for it: fatal for a headless
+        MCP subprocess, since MCP stdio requires stdout to carry only
+        JSON-RPC frames (mirrors the Shioaji loaders' lazy-login rationale).
+        """
+        self._logged_in = False
+        self._field_cache: Dict[str, pd.DataFrame] = {}
+
+    def _ensure_logged_in(self) -> None:
+        """Log in to finlab on first use, idempotent on repeat calls."""
+        if self._logged_in:
+            return
+        token = os.getenv("FINLAB_API_TOKEN", "")
+        if token.strip() in FINLAB_TOKEN_PLACEHOLDERS:
+            raise RuntimeError("FINLAB_API_TOKEN is not configured")
         import finlab
 
-        token = os.getenv("FINLAB_API_TOKEN", "")
         finlab.login(token)
-        self._field_cache: Dict[str, pd.DataFrame] = {}
+        self._logged_in = True
 
     def fetch(
         self,
@@ -87,6 +107,8 @@ class DataLoader:
         if interval != "1D":
             print(f"[WARN] finlab only supports 1D bars; got interval={interval!r}")
             return {}
+
+        self._ensure_logged_in()
 
         result: Dict[str, pd.DataFrame] = {}
         for code in codes:

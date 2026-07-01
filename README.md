@@ -844,6 +844,80 @@ Add to `claude_desktop_config.json`:
 </details>
 
 <details>
+<summary><b>Claude Code</b></summary>
+
+Claude Code (the `claude` CLI) is separate from Claude Desktop and does **not** read `claude_desktop_config.json`. Register the server with:
+
+```bash
+# this project only (default scope)
+claude mcp add vibe-trading -- vibe-trading-mcp
+
+# every project (closer to Claude Desktop's single global config)
+claude mcp add --scope user vibe-trading -- vibe-trading-mcp
+```
+
+The `--` before the command is required — it separates Claude Code's own flags from the server's command line. Equivalent hand-edited `.mcp.json` (project scope, safe to commit — see [Claude Code's MCP docs](https://code.claude.com/docs/en/mcp) for the `user`/`local` scope files):
+
+```json
+{
+  "mcpServers": {
+    "vibe-trading": {
+      "type": "stdio",
+      "command": "vibe-trading-mcp"
+    }
+  }
+}
+```
+
+First load of a project-scoped server triggers a one-time approval prompt.
+
+</details>
+
+<details>
+<summary><b>Gemini CLI</b></summary>
+
+```bash
+# this project only (default scope)
+gemini mcp add vibe-trading vibe-trading-mcp
+
+# every project
+gemini mcp add --scope user vibe-trading vibe-trading-mcp
+```
+
+Equivalent hand-edited `settings.json` (project: `.gemini/settings.json`; user: `~/.gemini/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "vibe-trading": {
+      "command": "vibe-trading-mcp"
+    }
+  }
+}
+```
+
+Gemini CLI only connects stdio servers in a "trusted" folder (`gemini trust`); an untrusted folder shows the server as permanently disconnected even when configured correctly. If a tool needs an API key passed through, declare it explicitly in that server's own `env` block — Gemini CLI auto-redacts environment variables that look like secrets (matching `*TOKEN*`/`*KEY*`/`*SECRET*`/etc.) from what gets forwarded to a spawned MCP server unless you opt them in that way.
+
+</details>
+
+<details>
+<summary><b>Antigravity CLI</b></summary>
+
+> **Unverified** — Antigravity CLI's official docs are a JavaScript-rendered page we could not scrape, and community sources disagree on the exact config path (`~/.gemini/config/mcp_config.json` is the best-supported answer, but there's an [open unresolved GitHub issue](https://github.com/google-antigravity/antigravity-cli/issues/60) about project-local configs being silently ignored, and the changelog shows the config path itself has moved recently). Standard MCP stdio shape below should work, but confirm the file path against your installed `agy` version — check `/mcp` inside the CLI, or Settings → Customizations → "Open MCP Config" in the IDE — before relying on it.
+
+```json
+{
+  "mcpServers": {
+    "vibe-trading": {
+      "command": "vibe-trading-mcp"
+    }
+  }
+}
+```
+
+</details>
+
+<details>
 <summary><b>OpenClaw</b></summary>
 
 Add to `~/.openclaw/config.yaml`:
