@@ -19,7 +19,17 @@ def _provider_with_canned_tables(**field_key_to_wide_table: pd.DataFrame) -> Fin
 class TestProviderMetadata:
     def test_list_tables(self) -> None:
         provider = FinlabFundamentalProvider()
-        assert provider.list_tables() == ["institutional", "margin", "monthly_revenue"]
+        assert provider.list_tables() == [
+            "director_shareholding",
+            "financial_statement",
+            "foreign_shareholding",
+            "fundamental_features",
+            "futures_institutional",
+            "institutional",
+            "margin",
+            "monthly_revenue",
+            "rotc_monthly_revenue",
+        ]
 
     def test_describe_table_returns_alias_map(self) -> None:
         provider = FinlabFundamentalProvider()
@@ -124,3 +134,174 @@ class TestEnrichPriceFramesWithFinlabFundamentals:
         data_map = {"2330.TW": pd.DataFrame({"close": [600.0]})}
         result = enrich_price_frames_with_finlab_fundamentals(data_map, provider, {})
         assert result is data_map
+
+
+class TestQuarterIndexedTables:
+    """financial_statement / fundamental_features are indexed by quarter-period
+    label ('2025-Q1'), not a date -- query_fundamentals must resolve them
+    through the etl:financial_statements_disclosure_dates companion table."""
+
+    def test_resolves_quarter_label_to_disclosure_date(self) -> None:
+        quarters = ["2024-Q4", "2025-Q1", "2025-Q2"]
+        assets = pd.DataFrame({"2330": [100.0, 110.0, 120.0]}, index=quarters)
+        disclosure = pd.DataFrame(
+            {"2330": pd.to_datetime(["2025-02-27", "2025-05-15", "2025-08-14"])},
+            index=quarters,
+        )
+        provider = _provider_with_canned_tables(**{
+            "financial_statement:資產總額": assets,
+            "etl:financial_statements_disclosure_dates": disclosure,
+        })
+
+        result = provider.query_fundamentals(
+            "financial_statement", ["2330.TW"], fields=["total_assets"],
+        )
+
+        series = result["2330.TW"]["total_assets"]
+        assert list(series.index) == list(pd.to_datetime(["2025-02-27", "2025-05-15", "2025-08-14"]))
+        assert list(series) == [100.0, 110.0, 120.0]
+
+    def test_drops_quarters_with_no_known_disclosure_date(self) -> None:
+        quarters = ["2024-Q4", "2025-Q1"]
+        assets = pd.DataFrame({"2330": [100.0, 110.0]}, index=quarters)
+        disclosure = pd.DataFrame(
+            {"2330": [pd.NaT, pd.Timestamp("2025-05-15")]}, index=quarters,
+        )
+        provider = _provider_with_canned_tables(**{
+            "financial_statement:資產總額": assets,
+            "etl:financial_statements_disclosure_dates": disclosure,
+        })
+
+        result = provider.query_fundamentals(
+            "financial_statement", ["2330.TW"], fields=["total_assets"],
+        )
+
+        series = result["2330.TW"]["total_assets"]
+        assert list(series) == [110.0]
+
+    def test_disclosure_table_may_have_different_quarter_range(self) -> None:
+        """The disclosure-date table has deeper history than any one field --
+        alignment must be by quarter label, not position."""
+        field_quarters = ["2025-Q1", "2025-Q2"]
+        assets = pd.DataFrame({"2330": [110.0, 120.0]}, index=field_quarters)
+        disclosure_quarters = ["2024-Q2", "2024-Q3", "2025-Q1", "2025-Q2"]
+        disclosure = pd.DataFrame(
+            {"2330": pd.to_datetime(["2024-08-14", "2024-11-14", "2025-05-15", "2025-08-14"])},
+            index=disclosure_quarters,
+        )
+        provider = _provider_with_canned_tables(**{
+            "financial_statement:資產總額": assets,
+            "etl:financial_statements_disclosure_dates": disclosure,
+        })
+
+        result = provider.query_fundamentals(
+            "financial_statement", ["2330.TW"], fields=["total_assets"],
+        )
+
+        series = result["2330.TW"]["total_assets"]
+        assert list(series) == [110.0, 120.0]
+        assert list(series.index) == list(pd.to_datetime(["2025-05-15", "2025-08-14"]))
+
+    def test_end_to_end_pit_merge_uses_disclosure_date_not_quarter_end(self) -> None:
+        quarters = ["2025-Q1"]
+        assets = pd.DataFrame({"2330": [110.0]}, index=quarters)
+        disclosure = pd.DataFrame({"2330": pd.to_datetime(["2025-05-15"])}, index=quarters)
+        provider = _provider_with_canned_tables(**{
+            "financial_statement:資產總額": assets,
+            "etl:financial_statements_disclosure_dates": disclosure,
+        })
+
+        price_dates = pd.to_datetime(["2025-03-31", "2025-05-20"])
+        bars = pd.DataFrame(
+            {
+                "open": [600.0, 610.0], "high": [605.0, 615.0],
+                "low": [595.0, 605.0], "close": [602.0, 612.0], "volume": [1000, 1100],
+            },
+            index=price_dates,
+        )
+
+        enriched = enrich_price_frames_with_finlab_fundamentals(
+            {"2330.TW": bars}, provider, {"financial_statement": ["total_assets"]},
+        )
+
+        result = enriched["2330.TW"]
+        # Quarter-end (2025-03-31) is BEFORE the real 2025-05-15 disclosure: no look-ahead.
+        assert pd.isna(result.loc[pd.Timestamp("2025-03-31"), "financial_statement_total_assets"])
+        # After the real disclosure date, the figure is visible.
+        assert result.loc[pd.Timestamp("2025-05-20"), "financial_statement_total_assets"] == 110.0
+
+
+class TestFuturesInstitutional:
+    """futures_institutional_investors_trading_summary uses TAIFEX product-name
+    columns ("臺股期貨_外資及陸資"), not stock codes -- codes here are .TWF symbols."""
+
+    def test_resolves_product_prefix_and_investor_type(self) -> None:
+        dates = pd.to_datetime(["2026-06-30"])
+        oi = pd.DataFrame(
+            {"臺股期貨_外資及陸資": [1234.0], "小型臺指期貨_外資及陸資": [99.0]}, index=dates,
+        )
+        provider = _provider_with_canned_tables(**{
+            "futures_institutional_investors_trading_summary:多空未平倉口數淨額": oi,
+        })
+
+        result = provider.query_fundamentals(
+            "futures_institutional", ["TXFR1.TWF", "MXFR1.TWF"], fields=["foreign_net_oi"],
+        )
+
+        assert result["TXFR1.TWF"]["foreign_net_oi"].iloc[0] == 1234.0
+        assert result["MXFR1.TWF"]["foreign_net_oi"].iloc[0] == 99.0
+
+    def test_unknown_product_omitted(self) -> None:
+        dates = pd.to_datetime(["2026-06-30"])
+        oi = pd.DataFrame({"臺股期貨_外資及陸資": [1234.0]}, index=dates)
+        provider = _provider_with_canned_tables(**{
+            "futures_institutional_investors_trading_summary:多空未平倉口數淨額": oi,
+        })
+
+        result = provider.query_fundamentals(
+            "futures_institutional", ["ZZZR1.TWF"], fields=["foreign_net_oi"],
+        )
+        assert "ZZZR1.TWF" not in result
+
+    def test_unknown_field_raises(self) -> None:
+        provider = FinlabFundamentalProvider()
+        with pytest.raises(ValueError, match="Unknown fields"):
+            provider.query_fundamentals("futures_institutional", ["TXFR1.TWF"], fields=["nope"])
+
+    def test_defaults_to_all_fields(self) -> None:
+        dates = pd.to_datetime(["2026-06-30"])
+        provider = _provider_with_canned_tables(**{
+            "futures_institutional_investors_trading_summary:多空未平倉口數淨額": pd.DataFrame(
+                {"臺股期貨_外資及陸資": [1.0], "臺股期貨_投信": [2.0], "臺股期貨_自營商": [3.0]}, index=dates,
+            ),
+            "futures_institutional_investors_trading_summary:多空交易口數淨額": pd.DataFrame(
+                {"臺股期貨_外資及陸資": [4.0], "臺股期貨_投信": [5.0], "臺股期貨_自營商": [6.0]}, index=dates,
+            ),
+        })
+
+        result = provider.query_fundamentals("futures_institutional", ["TXFR1.TWF"])
+        assert set(result["TXFR1.TWF"].columns) == {
+            "foreign_net_oi", "trust_net_oi", "dealer_net_oi",
+            "foreign_net_volume", "trust_net_volume", "dealer_net_volume",
+        }
+
+
+class TestTableConsistency:
+    def test_all_table_fields_keys_are_valid_finlab_dataset_prefixes(self) -> None:
+        """Every _TABLE_FIELDS field-key string (barring the display-only
+        futures_institutional entries) must look like 'dataset:column'."""
+        from backtest.loaders.finlab_fundamentals import _TABLE_FIELDS
+
+        for table, fields in _TABLE_FIELDS.items():
+            if table == "futures_institutional":
+                continue
+            for alias, key in fields.items():
+                assert ":" in key, f"{table}.{alias} field key {key!r} missing ':' separator"
+
+    def test_futures_institutional_display_and_query_aliases_match(self) -> None:
+        from backtest.loaders.finlab_fundamentals import (
+            _FUTURES_INSTITUTIONAL_FIELDS,
+            _TABLE_FIELDS,
+        )
+
+        assert set(_TABLE_FIELDS["futures_institutional"]) == set(_FUTURES_INSTITUTIONAL_FIELDS)

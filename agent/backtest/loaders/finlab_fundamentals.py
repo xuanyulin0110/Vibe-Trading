@@ -1,24 +1,52 @@
-"""finlab chip/fundamental data provider: 三大法人/融資融券/月營收.
+"""finlab chip/fundamental data provider.
 
-finlab's date index for these tables is already the public
-disclosure/trading date -- e.g. ``monthly_revenue:當月營收`` is indexed by
-its actual announcement date (commonly the 10th of the following month,
-per TWSE's monthly-revenue disclosure deadline), not the period-end date.
-``institutional_investors_trading_summary`` and ``margin_transactions`` are
-daily end-of-day statistics published the same trading day. A simple
-backward as-of merge against price frames is therefore already
-point-in-time safe -- no extra announcement-date offset is needed, unlike
-Tushare's statement tables (see ``tushare_fundamentals.py``) which carry a
-separate ``ann_date``/``f_ann_date`` column for exactly that reason.
-
-Field-key strings were confirmed against the installed ``finlab`` package's
+Covers 三大法人/融資融券/月營收 (the original three tables) plus the Phase 2d
+expansion: 財報科目 (financial_statement), 財務比率 (fundamental_features),
+外資持股 (foreign_investors_shareholding), 興櫃月營收 (rotc_monthly_revenue),
+董監持股不足 (internal_equity_insufficient), and 期貨三大法人
+(futures_institutional_investors_trading_summary). Every dataset prefix here
+was confirmed to exist against the installed ``finlab`` package's
 ``finlab.data.search(...)`` catalogue at the time this module was written;
 re-confirm if finlab renames a dataset.
+
+Date-index semantics differ per table -- do NOT assume they're all alike:
+
+  - ``institutional`` / ``margin`` / ``monthly_revenue`` / ``rotc_monthly_revenue``
+    / ``foreign_shareholding``: finlab's date index IS the public
+    disclosure/trading date (e.g. ``monthly_revenue:當月營收`` is indexed by its
+    actual announcement date, commonly the 10th of the following month). A
+    plain backward as-of merge against price frames is already
+    point-in-time safe.
+  - ``financial_statement`` / ``fundamental_features``: finlab indexes these
+    by **quarter-period label** (``'2025-Q1'``), not a date at all -- using
+    the index directly would be wrong AND wouldn't even merge_asof
+    (non-comparable to a DatetimeIndex). The real per-stock disclosure date
+    per quarter lives in a separate table, ``etl:financial_statements_disclosure_dates``
+    (same quarter-label index/columns shape, values = actual filing date).
+    Confirmed empirically: TSMC's (2330) 2025-Q1 statement wasn't disclosed
+    until 2025-05-15, ~45 days after quarter-end -- using the quarter-end as
+    the PIT date would leak ~45 days of look-ahead. ``query_fundamentals``
+    resolves the quarter label -> real date via that companion table before
+    handing back a date-indexed series, so the point-in-time merge in
+    ``enrich_price_frames_with_finlab_fundamentals`` stays correct.
+  - ``director_shareholding``: finlab's index here already looks like a real
+    date (not a quarter label), but no companion disclosure-date table was
+    found for it (unlike financial_statement). Treated as-is, same as the
+    other already-dated tables; this dataset is sparse (only populated when
+    a company actually has an insufficient-holding flag) so most codes will
+    simply have no rows.
+  - ``futures_institutional``: a whole different shape. Columns are
+    ``"{TAIFEX product name}_{investor type}"`` (e.g. ``臺股期貨_外資及陸資``
+    for TXF foreign net), not stock codes -- there's no ``.TW`` symbol to
+    strip. Codes here are ``.TWF`` futures symbols; the product code
+    (TXF/MXF/TMF) is extracted and mapped to its Chinese column prefix, and
+    the investor type (外資及陸資/投信/自營商) is baked into the alias itself
+    since one measure spans three investor-type columns.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
 import pandas as pd
 
@@ -46,7 +74,91 @@ _TABLE_FIELDS: Dict[str, Dict[str, str]] = {
         "revenue_yoy_pct": "monthly_revenue:去年同月增減(%)",
         "revenue_mom_pct": "monthly_revenue:上月比較增減(%)",
     },
+    "rotc_monthly_revenue": {
+        "revenue": "rotc_monthly_revenue:當月營收",
+        "revenue_yoy_pct": "rotc_monthly_revenue:去年同月增減(%)",
+        "revenue_mom_pct": "rotc_monthly_revenue:上月比較增減(%)",
+    },
+    "foreign_shareholding": {
+        "shares_held": "foreign_investors_shareholding:全體外資及陸資持有股數",
+        "holding_pct": "foreign_investors_shareholding:全體外資及陸資持股比率",
+        "remaining_investable_pct": "foreign_investors_shareholding:外資及陸資尚可投資比率",
+    },
+    "director_shareholding": {
+        "director_insufficient_shares": "internal_equity_insufficient:全體董事(不包含獨立董事)不足股數",
+        "supervisor_insufficient_shares": "internal_equity_insufficient:監察人應持有股數不足股數",
+    },
+    # Quarter-period-indexed -- see module docstring. query_fundamentals()
+    # resolves these through _DISCLOSURE_DATE_KEY before returning.
+    "financial_statement": {
+        "total_assets": "financial_statement:資產總額",
+        "total_liabilities": "financial_statement:負債總額",
+        "total_equity": "financial_statement:股東權益總額",
+        "revenue": "financial_statement:營業收入淨額",
+        "gross_profit": "financial_statement:營業毛利",
+        "operating_income": "financial_statement:營業利益",
+        "net_income": "financial_statement:歸屬母公司淨利_損",
+        "eps": "financial_statement:每股盈餘",
+        "operating_cash_flow": "financial_statement:營業活動之淨現金流入_流出",
+    },
+    "fundamental_features": {
+        "roe": "fundamental_features:ROE稅後",
+        "roa": "fundamental_features:ROA稅後息前",
+        "gross_margin": "fundamental_features:營業毛利率",
+        "operating_margin": "fundamental_features:營業利益率",
+        "net_margin": "fundamental_features:稅後淨利率",
+        "revenue_growth": "fundamental_features:營收成長率",
+        "current_ratio": "fundamental_features:流動比率",
+        "debt_ratio": "fundamental_features:負債比率",
+        "free_cash_flow": "fundamental_features:自由現金流量",
+    },
+    # Display-only entry -- actual querying goes through
+    # _FUTURES_INSTITUTIONAL_FIELDS (needs the per-alias investor-type suffix
+    # that a flat alias -> field-key string can't carry). Kept in sync with
+    # _FUTURES_INSTITUTIONAL_FIELDS by the TestTables consistency test.
+    "futures_institutional": {
+        "foreign_net_oi": "futures_institutional_investors_trading_summary:多空未平倉口數淨額 [外資及陸資]",
+        "trust_net_oi": "futures_institutional_investors_trading_summary:多空未平倉口數淨額 [投信]",
+        "dealer_net_oi": "futures_institutional_investors_trading_summary:多空未平倉口數淨額 [自營商]",
+        "foreign_net_volume": "futures_institutional_investors_trading_summary:多空交易口數淨額 [外資及陸資]",
+        "trust_net_volume": "futures_institutional_investors_trading_summary:多空交易口數淨額 [投信]",
+        "dealer_net_volume": "futures_institutional_investors_trading_summary:多空交易口數淨額 [自營商]",
+    },
 }
+
+_QUARTER_INDEXED_TABLES = frozenset({"financial_statement", "fundamental_features"})
+_DISCLOSURE_DATE_KEY = "etl:financial_statements_disclosure_dates"
+
+_FUTURES_TABLE = "futures_institutional"
+
+# alias -> (finlab field key, investor-type column suffix)
+_FUTURES_INSTITUTIONAL_FIELDS: Dict[str, Tuple[str, str]] = {
+    "foreign_net_oi": ("futures_institutional_investors_trading_summary:多空未平倉口數淨額", "外資及陸資"),
+    "trust_net_oi": ("futures_institutional_investors_trading_summary:多空未平倉口數淨額", "投信"),
+    "dealer_net_oi": ("futures_institutional_investors_trading_summary:多空未平倉口數淨額", "自營商"),
+    "foreign_net_volume": ("futures_institutional_investors_trading_summary:多空交易口數淨額", "外資及陸資"),
+    "trust_net_volume": ("futures_institutional_investors_trading_summary:多空交易口數淨額", "投信"),
+    "dealer_net_volume": ("futures_institutional_investors_trading_summary:多空交易口數淨額", "自營商"),
+}
+
+# TAIFEX product code -> Chinese column-name prefix used by
+# futures_institutional_investors_trading_summary (large-contract TXF is
+# "臺股期貨" in finlab's naming, not "臺指期貨").
+_FUTURES_PRODUCT_PREFIX: Dict[str, str] = {
+    "TXF": "臺股期貨",
+    "MXF": "小型臺指期貨",
+    "TMF": "微型臺指期貨",
+}
+_KNOWN_TW_FUTURES_PRODUCTS = tuple(_FUTURES_PRODUCT_PREFIX)
+
+
+def _extract_tw_futures_product(code: str) -> str:
+    """Extract the TAIFEX product code from a ``.TWF`` symbol (``TXFR1.TWF`` -> ``TXF``)."""
+    bare = code.split(".")[0].upper()
+    for product in _KNOWN_TW_FUTURES_PRODUCTS:
+        if bare.startswith(product):
+            return product
+    return bare[:3]
 
 
 class FinlabFundamentalProvider:
@@ -84,18 +196,27 @@ class FinlabFundamentalProvider:
         """Return ``{code: DataFrame(date-indexed, columns=requested aliases)}`` for one table.
 
         Args:
-            table: One of ``list_tables()`` (institutional/margin/monthly_revenue).
-            codes: Stock codes (e.g. ``2330.TW``).
+            table: One of ``list_tables()``.
+            codes: Stock codes (e.g. ``2330.TW``) for stock-oriented tables, or
+                ``.TWF`` futures codes (e.g. ``TXFR1.TWF``) for
+                ``futures_institutional``.
             fields: Alias names from ``describe_table(table)``; defaults to all.
 
         Returns:
             Mapping code -> DataFrame, omitting codes with no data in this table.
         """
+        if table == _FUTURES_TABLE:
+            return self._query_futures_institutional(codes, fields)
+
         field_map = self.describe_table(table)
         field_list = list(fields or field_map.keys())
         unknown = [f for f in field_list if f not in field_map]
         if unknown:
             raise ValueError(f"Unknown fields for table {table!r}: {unknown}")
+
+        disclosure: Optional[pd.DataFrame] = None
+        if table in _QUARTER_INDEXED_TABLES:
+            disclosure = self._field_table(_DISCLOSURE_DATE_KEY)
 
         result: Dict[str, pd.DataFrame] = {}
         for code in codes:
@@ -103,11 +224,60 @@ class FinlabFundamentalProvider:
             columns: Dict[str, pd.Series] = {}
             for alias in field_list:
                 wide = self._field_table(field_map[alias])
-                if stock_id in wide.columns:
-                    columns[alias] = wide[stock_id]
+                if stock_id not in wide.columns:
+                    continue
+                series = wide[stock_id]
+                if disclosure is not None:
+                    series = _resolve_quarter_index_to_dates(series, disclosure, stock_id)
+                columns[alias] = series
             if columns:
                 result[code] = pd.DataFrame(columns)
         return result
+
+    def _query_futures_institutional(
+        self, codes: Iterable[str], fields: Optional[Iterable[str]],
+    ) -> Dict[str, pd.DataFrame]:
+        field_list = list(fields or _FUTURES_INSTITUTIONAL_FIELDS.keys())
+        unknown = [f for f in field_list if f not in _FUTURES_INSTITUTIONAL_FIELDS]
+        if unknown:
+            raise ValueError(f"Unknown fields for table {_FUTURES_TABLE!r}: {unknown}")
+
+        result: Dict[str, pd.DataFrame] = {}
+        for code in codes:
+            product = _extract_tw_futures_product(code)
+            prefix = _FUTURES_PRODUCT_PREFIX.get(product)
+            if prefix is None:
+                continue
+            columns: Dict[str, pd.Series] = {}
+            for alias in field_list:
+                field_key, investor_suffix = _FUTURES_INSTITUTIONAL_FIELDS[alias]
+                wide = self._field_table(field_key)
+                column = f"{prefix}_{investor_suffix}"
+                if column in wide.columns:
+                    columns[alias] = wide[column]
+            if columns:
+                result[code] = pd.DataFrame(columns)
+        return result
+
+
+def _resolve_quarter_index_to_dates(
+    series: pd.Series, disclosure: pd.DataFrame, stock_id: str,
+) -> pd.Series:
+    """Convert a quarter-period-indexed series (``'2025-Q1'``) to a real,
+    PIT-safe date index using the per-stock disclosure date table.
+
+    The field table and the disclosure-date table don't necessarily cover the
+    same quarter range (the disclosure table has deeper history), so alignment
+    is by quarter-label (``reindex``), not position. Quarters with no known
+    disclosure date (not yet filed, or before the disclosure table's history)
+    are dropped rather than guessed.
+    """
+    series = series.dropna()
+    if stock_id not in disclosure.columns:
+        return series.iloc[0:0]
+    dates = disclosure[stock_id].reindex(series.index)
+    valid = dates.notna()
+    return pd.Series(series[valid].to_numpy(), index=dates[valid].to_numpy()).sort_index()
 
 
 def enrich_price_frames_with_finlab_fundamentals(
@@ -118,7 +288,8 @@ def enrich_price_frames_with_finlab_fundamentals(
     """Attach PIT-safe finlab chip/fundamental columns to daily price frames.
 
     Columns are prefixed with their table name, e.g. ``institutional_trust_net``,
-    ``margin_margin_balance``, ``monthly_revenue_revenue``.
+    ``margin_margin_balance``, ``monthly_revenue_revenue``,
+    ``financial_statement_net_income``, ``futures_institutional_foreign_net_oi``.
     """
     if not data_map or not fields_by_table:
         return data_map

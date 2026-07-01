@@ -190,11 +190,11 @@ def _maybe_enrich_fundamentals(
 ) -> Dict[str, pd.DataFrame]:
     """Attach configured statement/chip fields before signal generation.
 
-    Routes to ``FinlabFundamentalProvider`` (三大法人/融資融券/月營收) when any
-    code is a TW equity, otherwise to the existing ``TushareFundamentalProvider``
-    (A-share statement tables) -- the two providers' table names never collide,
-    but a single backtest is always one market, so routing per-market rather
-    than per-table keeps this simple.
+    Routes to ``FinlabFundamentalProvider`` (三大法人/融資融券/月營收/財報/期貨三大法人
+    etc.) when any code is a TW equity or TW futures contract, otherwise to the
+    existing ``TushareFundamentalProvider`` (A-share statement tables) -- the
+    two providers' table names never collide, but a single backtest is always
+    one market, so routing per-market rather than per-table keeps this simple.
     """
     fields_by_table = _normalise_fundamental_fields(config)
     if not fields_by_table:
@@ -205,7 +205,7 @@ def _maybe_enrich_fundamentals(
     markets = {_detect_market(code) for code in data_map}
 
     try:
-        if "tw_equity" in markets:
+        if "tw_equity" in markets or "tw_futures" in markets:
             from backtest.loaders.finlab_fundamentals import (
                 FinlabFundamentalProvider,
                 enrich_price_frames_with_finlab_fundamentals,
