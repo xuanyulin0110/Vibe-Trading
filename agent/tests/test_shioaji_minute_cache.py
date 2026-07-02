@@ -29,6 +29,7 @@ from backtest.loaders._shioaji_kbars import (
     _quota_has_headroom,
     _read_coverage,
     _subtract_date_intervals,
+    fetch_minute_kbars,
     fetch_minute_kbars_cached,
 )
 
@@ -181,8 +182,15 @@ class _FakeApi:
         self.holidays = holidays or set()
         self.remaining_bytes = remaining_bytes
 
+    #: When > 0, the next `fail_next` kbars() calls raise (simulating the
+    #: server-side "Timeout Topic: api/v1/data/kbars" seen live 2026-07-02).
+    fail_next: int = 0
+
     def kbars(self, contract: Any, start: str, end: str) -> _FakeKbars:
         self.calls.append((start, end))
+        if self.fail_next > 0:
+            self.fail_next -= 1
+            raise RuntimeError("Timeout Topic: api/v1/data/kbars, Corr: c2, Timeout: 5000ms")
         cur = dt.date.fromisoformat(start)
         last = dt.date.fromisoformat(end)
         ts, opens, highs, lows, closes, vols = [], [], [], [], [], []
@@ -376,6 +384,70 @@ class TestFetchMinuteKbarsCachedQuotaExhausted:
         )
         assert api.calls == [("2020-01-01", "2020-01-05")]
         assert len(df) == 5
+
+
+class TestFetchFailureDoesNotPoisonCoverage:
+    """Regression for a real incident (2026-07-02): a server-side kbars
+    timeout made the fetch return empty, and the cache marked the range
+    covered anyway -- every later call for that range then silently served
+    nothing, forever. Failures must leave the gap uncovered for retry.
+    """
+
+    def test_plain_fetch_records_failed_ranges_in_attrs(self) -> None:
+        api = _FakeApi()
+        api.fail_next = 1
+        df = fetch_minute_kbars(api, object(), "2020-01-01", "2020-01-05")
+        assert df.empty
+        assert df.attrs["failed_ranges"] == [("2020-01-01", "2020-01-05")]
+
+    def test_timeout_leaves_gap_uncovered_and_next_call_retries(
+        self, fake_duckdb, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        monkeypatch.setenv(MINUTE_CACHE_ENV, "1")
+        api = _FakeApi()
+        api.fail_next = 1
+
+        df = fetch_minute_kbars_cached(
+            api, object(), source="shioaji", symbol="2330.TW",
+            start_date="2020-01-01", end_date="2020-01-05",
+        )
+        assert df.empty
+        assert "leaving gap uncovered for retry" in capsys.readouterr().out
+        cache_path = _minute_cache_path("shioaji", "2330.TW")
+        assert _read_coverage(cache_path) == []  # NOT poisoned
+
+        # Transient failure clears -- the same range is refetched, served,
+        # and only now marked covered.
+        df = fetch_minute_kbars_cached(
+            api, object(), source="shioaji", symbol="2330.TW",
+            start_date="2020-01-01", end_date="2020-01-05",
+        )
+        assert len(df) == 5
+        assert api.calls == [("2020-01-01", "2020-01-05"), ("2020-01-01", "2020-01-05")]
+        assert _read_coverage(cache_path) == [("2020-01-01", "2020-01-05")]
+
+    def test_partial_failure_covers_only_the_successful_gap(
+        self, fake_duckdb, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Two disjoint gaps in one call: the first gap's fetch fails, the
+        # second succeeds -- only the successful gap may be marked covered.
+        monkeypatch.setenv(MINUTE_CACHE_ENV, "1")
+        api = _FakeApi()
+        # Prime coverage so the next request has two gaps around it.
+        fetch_minute_kbars_cached(
+            api, object(), source="shioaji", symbol="2330.TW",
+            start_date="2020-01-10", end_date="2020-01-12",
+        )
+        api.fail_next = 1  # first gap (2020-01-01..2020-01-09) fails
+        fetch_minute_kbars_cached(
+            api, object(), source="shioaji", symbol="2330.TW",
+            start_date="2020-01-01", end_date="2020-01-15",
+        )
+        cache_path = _minute_cache_path("shioaji", "2330.TW")
+        covered = _read_coverage(cache_path)
+        assert ("2020-01-01", "2020-01-09") not in covered
+        merged = _merge_date_intervals(covered)
+        assert ("2020-01-10", "2020-01-15") in merged
 
 
 class TestFetchMinuteKbarsCachedTodayBoundary:

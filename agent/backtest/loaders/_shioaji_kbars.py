@@ -238,15 +238,22 @@ def fetch_minute_kbars(api: Any, contract: Any, start_date: str, end_date: str) 
     """Pull chunked 1-minute K-bars for one contract into a datetime-indexed frame.
 
     Returns an empty frame (with the OHLCV columns) when no data is available,
-    so callers can uniformly branch on ``.empty``.
+    so callers can uniformly branch on ``.empty``. Chunk-level request
+    *failures* (e.g. a server-side kbars timeout, seen live 2026-07-02) are
+    recorded in ``result.attrs["failed_ranges"]`` as (start, end) date pairs
+    -- an empty result with failures is "the fetch broke", not "no data
+    exists", and cache layers must not mark such ranges as settled (the
+    same silent-empty trap as quota exhaustion, via a different path).
     """
     chunks: List[pd.DataFrame] = []
+    failed: List[tuple[str, str]] = []
     for chunk_start, chunk_end in date_chunks(start_date, end_date):
         try:
             with _shioaji_call_gate.call():
                 kbars = api.kbars(contract, start=chunk_start, end=chunk_end)
         except Exception as exc:  # noqa: BLE001 - one bad chunk should not kill the fetch
             print(f"[WARN] shioaji kbars failed for {chunk_start}..{chunk_end}: {exc}")
+            failed.append((chunk_start, chunk_end))
             continue
         if kbars is None or not getattr(kbars, "ts", None):
             continue
@@ -259,12 +266,16 @@ def fetch_minute_kbars(api: Any, contract: Any, start_date: str, end_date: str) 
         }, index=pd.to_datetime(kbars.ts)))
 
     if not chunks:
-        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        empty.attrs["failed_ranges"] = failed
+        return empty
 
     minute_df = pd.concat(chunks).sort_index()
     for col in ("open", "high", "low", "close", "volume"):
         minute_df[col] = pd.to_numeric(minute_df[col], errors="coerce")
-    return minute_df.dropna(subset=["open", "high", "low", "close"])
+    minute_df = minute_df.dropna(subset=["open", "high", "low", "close"])
+    minute_df.attrs["failed_ranges"] = failed
+    return minute_df
 
 
 # ---------------------------------------------------------------------------
@@ -410,8 +421,12 @@ def fetch_minute_kbars_cached(
     A residual gap: if quota runs out *mid-way* through fetching a single
     multi-chunk gap (rather than being already exhausted before this call
     starts, which ``_quota_has_headroom`` does catch), the partial result for
-    that gap still gets marked "covered". Accepted trade-off -- catching the
+    that gap still gets marked "covered" -- quota-exhausted responses are
+    silent empties, not exceptions. Accepted trade-off -- catching the
     common case (already exhausted) without tracking quota per 29-day chunk.
+    Chunk requests that *raise* (e.g. a server-side kbars timeout) are a
+    different story: those gaps are left uncovered for retry, via
+    ``fetch_minute_kbars``'s ``attrs["failed_ranges"]`` signal.
     """
     if not _minute_cache_enabled():
         return fetch_minute_kbars(api, contract, start_date, end_date)
@@ -433,19 +448,31 @@ def fetch_minute_kbars_cached(
 
     if gaps or fetch_live:
         new_pieces: List[pd.DataFrame] = []
+        fully_fetched: List[tuple[str, str]] = []
         if gaps:
             if _quota_has_headroom(api):
                 for gap_start, gap_end in gaps:
                     chunk = fetch_minute_kbars(api, contract, gap_start, gap_end)
+                    if chunk.attrs.get("failed_ranges"):
+                        # A chunk request failed (e.g. server-side timeout,
+                        # hit live 2026-07-02): an empty/partial result here
+                        # means "the fetch broke", not "no data exists" --
+                        # marking it covered would permanently poison the
+                        # sidecar and silently serve nothing forever after.
+                        print(
+                            f"[WARN] shioaji minute cache: fetch failed for {symbol} "
+                            f"{gap_start}..{gap_end}, leaving gap uncovered for retry"
+                        )
+                    else:
+                        fully_fetched.append((gap_start, gap_end))
                     if not chunk.empty:
                         new_pieces.append(chunk)
-                covered = _merge_date_intervals(covered + gaps)
+                covered = _merge_date_intervals(covered + fully_fetched)
             else:
                 print(
                     f"[WARN] shioaji minute cache: quota exhausted, serving cached-only "
                     f"data for {symbol} ({len(gaps)} uncached gap(s) skipped this call)"
                 )
-                gaps = []  # nothing actually fetched -- don't persist a bogus "covered"
         if fetch_live:
             live_chunk = fetch_minute_kbars(api, contract, live_start, end_date)
             if not live_chunk.empty:
@@ -458,7 +485,7 @@ def fetch_minute_kbars_cached(
             local = local[~local.index.duplicated(keep="last")]
             if local is not None and not local.empty:
                 _write_loader_cache_frame(cache_path, local)
-        if gaps:  # only persist coverage for the settled portion that was actually fetched
+        if fully_fetched:  # only persist coverage for gaps whose fetch fully succeeded
             _write_coverage(cache_path, covered)
 
     if local is None or local.empty:
