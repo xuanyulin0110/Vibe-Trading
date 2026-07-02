@@ -179,6 +179,6 @@ class DataLoader:
         if minute_df.empty:
             return None
 
-        bars = resample_kbars(minute_df, interval)
+        bars = resample_kbars(minute_df, interval, session_aware=True)
         bars = validate_ohlc(bars)
         return bars if not bars.empty else None

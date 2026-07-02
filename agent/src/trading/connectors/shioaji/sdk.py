@@ -314,7 +314,8 @@ def get_historical_bars(
     if minute_df.empty:
         return {"status": "ok", "symbol": symbol, "period": period, "bars": []}
 
-    bars_df = resample_kbars(minute_df, period).tail(int(limit))
+    is_futures = symbol.upper().endswith(".TWF")
+    bars_df = resample_kbars(minute_df, period, session_aware=is_futures).tail(int(limit))
     return {
         "status": "ok",
         "symbol": symbol,

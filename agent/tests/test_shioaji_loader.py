@@ -179,3 +179,149 @@ class TestResampleKbars:
             "close": [None], "volume": [0],
         }, index=idx)
         assert resample_kbars(minute_df, "1D").empty
+
+
+def _bar(ts: str, o: float, h: float, low: float, c: float, v: int) -> dict:
+    return {"ts": pd.Timestamp(ts), "open": o, "high": h, "low": low, "close": c, "volume": v}
+
+
+def _taifex_frame(rows: list[dict]) -> pd.DataFrame:
+    df = pd.DataFrame(rows).set_index("ts")
+    df.index.name = None
+    return df
+
+
+class TestSessionAwareResample:
+    """TAIFEX futures: a trading day's bar = the night session that runs into
+    its morning (Day D-1 15:00 -> Day D 05:00) plus Day D's own day session
+    (08:45-13:45). Confirmed live (2026-07-02) that the naive calendar-day
+    resample instead lets Day D's *own* night session start (15:00-23:59,
+    which belongs to Day D+1) leak into Day D's bar -- these tests pin the
+    fix against hand-built minute bars with known expected values.
+    """
+
+    def test_night_session_start_belongs_to_next_trading_day(self) -> None:
+        # Monday's night session (15:00) is the start of Tuesday's trading day.
+        rows = [
+            _bar("2024-01-08 15:00:00", 100, 105, 99, 102, 10),   # Mon night start -> Tue
+            _bar("2024-01-08 15:01:00", 102, 106, 101, 104, 10),
+            _bar("2024-01-09 08:45:00", 110, 112, 108, 111, 10),  # Tue day session
+            _bar("2024-01-09 13:45:00", 111, 113, 109, 112, 10),  # Tue day session close
+        ]
+        minute_df = _taifex_frame(rows)
+        naive = resample_kbars(minute_df, "1D", session_aware=False)
+        aware = resample_kbars(minute_df, "1D", session_aware=True)
+
+        # Naive: Monday's bar wrongly captures its own night-session start.
+        assert naive.loc["2024-01-08", "close"] == 104
+        # Aware: that same 15:00 bar is folded into Tuesday's bar instead,
+        # and Tuesday's close is the real day-session close (13:45), not
+        # contaminated by anything after it.
+        assert "2024-01-08" not in aware.index.strftime("%Y-%m-%d")
+        tue = aware.loc["2024-01-09"]
+        assert tue["open"] == 100     # Monday night session's 15:00 open
+        assert tue["close"] == 112    # Tuesday's real 13:45 day-session close
+        assert tue["volume"] == 40
+
+    def test_night_session_tail_before_5am_joins_same_trading_day(self) -> None:
+        # The 00:00-05:00 continuation of Monday evening's session is still
+        # part of Tuesday's trading day, consistent with the 15:00 start.
+        rows = [
+            _bar("2024-01-08 15:00:00", 100, 100, 100, 100, 5),
+            _bar("2024-01-09 04:59:00", 120, 121, 119, 120, 5),   # night tail, still Tue
+            _bar("2024-01-09 08:45:00", 121, 122, 120, 121, 5),
+            _bar("2024-01-09 13:45:00", 121, 123, 120, 122, 5),
+        ]
+        minute_df = _taifex_frame(rows)
+        aware = resample_kbars(minute_df, "1D", session_aware=True)
+
+        assert len(aware) == 1
+        tue = aware.loc["2024-01-09"]
+        assert tue["open"] == 100
+        assert tue["close"] == 122
+        assert tue["volume"] == 20
+
+    def test_weekend_gap_uses_actual_data_not_hardcoded_calendar(self) -> None:
+        # Friday's night session belongs to the next real trading day found
+        # in the data (Monday), correctly skipping Sat/Sun with no external
+        # holiday calendar needed.
+        rows = [
+            _bar("2024-01-05 15:00:00", 200, 201, 199, 200, 5),  # Fri night -> Mon
+            _bar("2024-01-08 08:45:00", 205, 206, 204, 205, 5),  # Mon day session
+            _bar("2024-01-08 13:45:00", 205, 207, 204, 206, 5),
+        ]
+        minute_df = _taifex_frame(rows)
+        aware = resample_kbars(minute_df, "1D", session_aware=True)
+
+        assert len(aware) == 1
+        mon = aware.loc["2024-01-08"]
+        assert mon["open"] == 200   # Friday night session's open carried in
+        assert mon["close"] == 206  # Monday's real day-session close
+
+    def test_session_aware_defaults_off(self) -> None:
+        """Equities have no night session -- callers that don't pass
+        session_aware must keep getting the plain calendar-day behavior."""
+        rows = [
+            _bar("2024-01-08 15:00:00", 100, 105, 99, 102, 10),
+            _bar("2024-01-09 08:45:00", 110, 112, 108, 111, 10),
+        ]
+        minute_df = _taifex_frame(rows)
+        assert resample_kbars(minute_df, "1D").equals(resample_kbars(minute_df, "1D", session_aware=False))
+
+    def test_friday_night_session_spanning_saturday_lands_on_monday(self) -> None:
+        # Friday 15:00 -> Saturday 05:00 is ONE overnight session belonging to
+        # Monday. Includes the 05:01-stamped Saturday closing-auction bar (real
+        # Shioaji stamps the 05:00:00 auction as 05:00 or 05:01) -- an earlier
+        # implementation leaked these into a spurious Saturday daily bar.
+        rows = [
+            _bar("2024-01-05 15:01:00", 200, 202, 199, 201, 5),   # Fri night start
+            _bar("2024-01-05 23:59:00", 201, 203, 200, 202, 5),
+            _bar("2024-01-06 00:30:00", 202, 204, 201, 203, 5),   # Sat overnight tail
+            _bar("2024-01-06 05:01:00", 203, 205, 202, 204, 5),   # Sat 05:00 closing auction
+            _bar("2024-01-08 08:46:00", 210, 211, 209, 210, 5),   # Mon day session
+            _bar("2024-01-08 13:45:00", 210, 212, 209, 211, 5),
+        ]
+        aware = resample_kbars(_taifex_frame(rows), "1D", session_aware=True)
+
+        assert len(aware) == 1  # no Saturday bar
+        mon = aware.loc["2024-01-08"]
+        assert mon["open"] == 200    # Friday 15:01 open
+        assert mon["close"] == 211   # Monday's real 13:45 close
+        assert mon["volume"] == 30   # every bar of the session accounted for
+
+    def test_impossible_session_bars_are_dropped_as_junk(self) -> None:
+        # The Shioaji simulation feed emits dust bars in windows where TAIFEX
+        # has no session at all (observed live: Sunday "day" prints, Monday
+        # pre-dawn bars implying a nonexistent Sunday night session, weekday
+        # 13:46-14:59 dead-zone bars). These must not fabricate daily bars.
+        rows = [
+            _bar("2024-01-07 09:38:00", 150, 150, 150, 150, 2),   # Sunday "day" print
+            _bar("2024-01-08 03:00:00", 151, 151, 151, 151, 1),   # Mon pre-dawn (no Sun night session)
+            _bar("2024-01-08 14:30:00", 152, 152, 152, 152, 1),   # weekday dead zone
+            _bar("2024-01-08 08:46:00", 210, 211, 209, 210, 5),   # legit Mon day session
+            _bar("2024-01-08 13:45:00", 210, 212, 209, 211, 5),
+        ]
+        aware = resample_kbars(_taifex_frame(rows), "1D", session_aware=True)
+
+        assert len(aware) == 1
+        mon = aware.loc["2024-01-08"]
+        assert mon["open"] == 210     # junk 03:00 bar did not leak into Monday's open
+        assert mon["close"] == 211
+        assert mon["volume"] == 10    # only the two legit bars counted
+
+    def test_holiday_bridge_night_session_lands_after_holiday(self) -> None:
+        # Tuesday night session with Wednesday a market holiday (no Wednesday
+        # day bars in the data): the session belongs to Thursday.
+        rows = [
+            _bar("2024-01-09 15:01:00", 300, 301, 299, 300, 5),   # Tue night start
+            _bar("2024-01-10 04:59:00", 301, 302, 300, 301, 5),   # Wed pre-dawn tail (same session)
+            _bar("2024-01-11 08:46:00", 305, 306, 304, 305, 5),   # Thu day session
+            _bar("2024-01-11 13:45:00", 305, 307, 304, 306, 5),
+        ]
+        aware = resample_kbars(_taifex_frame(rows), "1D", session_aware=True)
+
+        assert len(aware) == 1
+        thu = aware.loc["2024-01-11"]
+        assert thu["open"] == 300
+        assert thu["close"] == 306
+        assert thu["volume"] == 20

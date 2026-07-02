@@ -41,6 +41,7 @@ for the full design.
 
 from __future__ import annotations
 
+import bisect
 import collections
 import contextlib
 import datetime as dt
@@ -468,11 +469,24 @@ def fetch_minute_kbars_cached(
     return local.loc[(local.index >= start_ts) & (local.index < end_ts)]
 
 
-def resample_kbars(minute_df: pd.DataFrame, interval: str) -> pd.DataFrame:
+def resample_kbars(minute_df: pd.DataFrame, interval: str, *, session_aware: bool = False) -> pd.DataFrame:
     """Roll 1-minute OHLCV bars up to ``interval``.
 
     ``1m`` is a passthrough (the source is already 1-minute). Any other
     supported interval is aggregated with standard OHLCV rules.
+
+    Args:
+        session_aware: TAIFEX-futures-only. When resampling to ``1d``, group
+            by TAIFEX trading day (the night session starting at 15:00
+            belongs to the *next* trading day per the exchange's own
+            clearing-date convention) instead of naive calendar midnight.
+            Confirmed live (2026-07-02) that a plain calendar-day resample on
+            raw Shioaji futures timestamps wrongly splits each overnight
+            session at midnight, bucketing the last ~9 hours of a trading
+            day's *own* night session into that day's bar instead of the
+            next one -- every daily close ends up being the 23:59 price, not
+            the real day-session settlement. Equities have no night session,
+            so this must stay ``False`` there (the default).
 
     Raises:
         ValueError: ``interval`` is not one of the supported tokens.
@@ -483,5 +497,75 @@ def resample_kbars(minute_df: pd.DataFrame, interval: str) -> pd.DataFrame:
     rule = _INTERVAL_RULES[key]
     if rule is None:  # 1m passthrough
         return minute_df
+    if session_aware and key == "1d":
+        return _resample_taifex_daily(minute_df)
     agg = minute_df.resample(rule).agg(_OHLCV_AGG)
+    return agg.dropna(subset=["open", "high", "low", "close"])
+
+
+#: TAIFEX index-futures session windows, in bar-stamp terms. Confirmed against
+#: real TXFR1 minute data (2026-07-02, full 2020-2026 history): day-session
+#: stamps run 08:46..13:45 (the 13:45 bar is the closing auction), night-start
+#: stamps 15:01..23:59 plus the 00:00 bar, and the overnight tail ends with a
+#: 05:00 or 05:01 stamp (the 05:00:00 closing auction). Windows below are
+#: inclusive supersets of those observed stamps.
+_DAY_SESSION_START = dt.time(8, 45)
+_DAY_SESSION_END = dt.time(13, 45)
+_NIGHT_SESSION_START = dt.time(15, 0)
+_NIGHT_TAIL_END = dt.time(5, 1)
+
+
+def _assign_taifex_trading_day(index: pd.DatetimeIndex) -> pd.Series:
+    """Map each raw bar timestamp to the TAIFEX trading day it belongs to.
+
+    TAIFEX's own clearing-date rule: the entire night session (trading day
+    D's 15:00 through the next calendar morning's 05:00) is attributed to
+    the *next* trading day, not D. Trading days are derived from the data
+    itself (weekday dates with day-session bars) rather than a hardcoded
+    holiday calendar, so weekends and holidays bridge correctly: Friday's
+    night session (Fri 15:00 -> Sat 05:00) lands on Monday, and a night
+    session before a mid-week holiday lands on the day after the holiday.
+
+    Bars outside every legitimate session window return ``NaT`` (drop):
+    the Shioaji simulation feed carries a dust of impossible bars -- e.g.
+    Sunday "day-session" prints and 13:46-14:59 dead-zone bars, quantified
+    at 196 of 1.73M bars (0.011%, 0.028% of volume) on the real 2020-2026
+    TXFR1 history -- which would otherwise fabricate weekend daily bars.
+    TAIFEX has no weekend sessions: day + night-start bars must fall on
+    Mon-Fri, and the overnight tail (00:00-05:01) on Tue-Sat.
+    """
+    dates = index.normalize()
+    times = index.time
+    dow = index.dayofweek  # 0=Mon .. 6=Sun
+
+    is_day = (
+        (dow <= 4)
+        & (times >= _DAY_SESSION_START)
+        & (times <= _DAY_SESSION_END)
+    )
+    is_night_start = (dow <= 4) & (times >= _NIGHT_SESSION_START)
+    is_night_tail = (dow >= 1) & (dow <= 5) & (times <= _NIGHT_TAIL_END)
+
+    day_session_dates = sorted(set(dates[is_day]))
+
+    def next_trading_day(after: pd.Timestamp) -> pd.Timestamp:
+        i = bisect.bisect_right(day_session_dates, after)
+        # Past the end of the data (e.g. a still-running night session at
+        # fetch time): fall back to the next calendar day so the partial
+        # bar still surfaces rather than vanishing.
+        return day_session_dates[i] if i < len(day_session_dates) else after + pd.Timedelta(days=1)
+
+    trading_day = pd.Series(pd.NaT, index=index, dtype="datetime64[ns]")
+    trading_day[is_day] = dates[is_day]
+    trading_day[is_night_start] = [next_trading_day(d) for d in dates[is_night_start]]
+    trading_day[is_night_tail] = [next_trading_day(d - pd.Timedelta(days=1)) for d in dates[is_night_tail]]
+    return trading_day
+
+
+def _resample_taifex_daily(minute_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate 1-minute futures bars into TAIFEX-session-aware daily bars."""
+    trading_day = _assign_taifex_trading_day(minute_df.index)
+    valid = trading_day.notna()
+    agg = minute_df[valid.to_numpy()].groupby(trading_day[valid]).agg(_OHLCV_AGG)
+    agg.index.name = minute_df.index.name
     return agg.dropna(subset=["open", "high", "low", "close"])
