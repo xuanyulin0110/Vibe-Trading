@@ -1,9 +1,9 @@
-"""Read-only Shioaji (SinoPac, 永豐金證券) connector via the official ``shioaji`` SDK.
+"""Shioaji (SinoPac, 永豐金證券) connector via the official ``shioaji`` SDK.
 
 Wraps ``shioaji.Shioaji`` for the read operations the trading layer exposes
-(account / positions / orders / quote / history). No order-placement method
-is exposed here -- that is a later phase behind the mandate gate, mirroring
-how ``connectors/tiger/sdk.py`` layers writes on top of a read-only base.
+(account / positions / orders / quote / history), plus futures order
+placement/cancellation gated to the ``paper`` (simulation) profile only --
+see ``place_order``/``cancel_order`` below.
 
 Unlike Tiger's paper-vs-live split (two different account-number formats
 on the SAME connector), Shioaji has one account and a ``simulation``
@@ -13,7 +13,13 @@ in the bundled Shioaji skill). So ``profile`` here just toggles that
 boolean -- there is no account-format mismatch to guard against.
 
 Login uses ``api_key``/``secret_key`` only; no CA certificate is needed for
-any read operation in this module (CA only gates order placement).
+any read operation, nor for simulation order placement (Shioaji skips CA
+signing automatically in simulation -- see ORDERS.md "Prerequisites" in the
+bundled Shioaji skill). Real-money order placement (``live-readonly`` ->
+some future ``live`` profile) needs CA activation, mandate-gate wiring, and
+a futures-aware ``InstrumentType``/``AssetClass`` in ``src/live/mandate``
+(none of that exists yet) -- ``place_order``/``cancel_order`` here
+deliberately refuse any non-simulation profile until that's built.
 """
 
 from __future__ import annotations
@@ -237,9 +243,10 @@ def get_positions(config: ShioajiConfig | None = None) -> dict[str, Any]:
 def get_open_orders(
     config: ShioajiConfig | None = None, *, include_executions: bool = False,
 ) -> dict[str, Any]:
-    """Fetch recent trades/orders for the configured profile (read-only; no order placement here)."""
+    """Fetch recent trades/orders for the configured profile."""
     cfg = config or load_config()
     api = _login(cfg)
+    _sync_trade_status(api)
     trades = _safe_call(api, "list_trades") or []
     rows = [_trade_to_dict(item) for item in trades]
     result: dict[str, Any] = {
@@ -314,6 +321,265 @@ def get_historical_bars(
         "period": period,
         "bars": [_bar_row_to_dict(ts, row) for ts, row in bars_df.iterrows()],
     }
+
+
+#: TAIFEX rejects MKT+ROD (op_code 9938) -- market orders must be IOC/FOK.
+_FUTURES_TIME_IN_FORCE = ("rod", "ioc", "fok")
+
+#: Returned by order methods when a non-simulation config reaches them.
+#: Shioaji exposes no runtime paper/live discriminator (same account, a
+#: ``simulation`` boolean picks the environment), so -- following the
+#: Longbridge/Dhan/Shoonya precedent -- the connector is structurally capped
+#: at paper until CA activation + mandate-gate wiring exists for a real live
+#: order path.
+_PAPER_ONLY_ERROR = (
+    "Shioaji connector is paper-only for order placement: it exposes no "
+    "runtime paper/live discriminator, and real-money orders need CA "
+    "activation + mandate-gate wiring that doesn't exist yet. Use the "
+    "'paper' (simulation) profile."
+)
+
+
+def place_order(
+    config: ShioajiConfig | None = None,
+    *,
+    symbol: str,
+    side: str,
+    quantity: float | None = None,
+    notional: float | None = None,
+    order_type: str = "market",
+    limit_price: float | None = None,
+    time_in_force: str = "rod",
+    octype: str = "auto",
+) -> dict[str, Any]:
+    """Submit a TAIFEX futures order against the configured Shioaji account.
+
+    Simulation-only for now: refuses any profile where ``cfg.simulation`` is
+    ``False`` (i.e. ``live-readonly``), since real-money order placement
+    needs CA activation and mandate-gate wiring that doesn't exist yet (see
+    the module docstring). Only futures symbols (``*.TWF``) are supported --
+    TW equity order placement is a separate future extension.
+
+    ``order_status`` in the returned dict is whatever the exchange
+    acknowledged synchronously when ``place_order`` returned -- commonly
+    ``PendingSubmit``, sometimes a same-tick rejection (e.g. price outside
+    the daily limit band). This function does NOT poll for a settled status
+    (see the ``update_status`` note inline) -- call :func:`get_open_orders`
+    afterward, as a separate call, to see whether the order was accepted,
+    rejected, or filled.
+
+    Args:
+        config: Connector config; falls back to the saved config when ``None``.
+        symbol: Futures symbol, e.g. ``TXFR1.TWF``.
+        side: ``buy`` or ``sell``.
+        quantity: Number of contracts (lots). Required -- Shioaji futures
+            orders are sized by contract count, not notional.
+        notional: Not supported for futures; passing this is an error.
+        order_type: ``market`` or ``limit``.
+        limit_price: Required when ``order_type`` is ``limit``.
+        time_in_force: ``rod`` (rest-of-day), ``ioc``, or ``fok``. A
+            ``market`` order must use ``ioc``/``fok`` -- TAIFEX rejects
+            market+rod.
+        octype: ``auto`` (default, recommended), ``new``, ``cover``, or
+            ``daytrade`` -- open/close type.
+
+    Returns:
+        On success ``{"status": "ok", "order_id", "symbol", "side", "profile",
+        "simulation", "order_type", "time_in_force", "octype", "quantity",
+        "limit_price", "order_status", "filled_qty"}``. On invalid input,
+        submission failure, or a non-simulation profile, ``{"status":
+        "error", "error": <message>}`` -- fails closed, never raises for
+        caller-controlled mistakes.
+    """
+    cfg = config or load_config()
+    if not cfg.simulation:
+        return {"status": "error", "error": _PAPER_ONLY_ERROR}
+
+    clean_symbol = str(symbol or "").strip()
+    if not clean_symbol.upper().endswith(".TWF"):
+        return {"status": "error", "error": "only *.TWF futures symbols are supported"}
+
+    side_token = str(side or "").strip().lower()
+    if side_token not in ("buy", "sell"):
+        return {"status": "error", "error": "side must be 'buy' or 'sell'"}
+
+    if notional is not None:
+        return {"status": "error", "error": "notional is not supported for futures; provide quantity"}
+    if quantity is None:
+        return {"status": "error", "error": "quantity is required"}
+    try:
+        qty_value = int(quantity)
+    except (TypeError, ValueError):
+        return {"status": "error", "error": "quantity must be an integer contract count"}
+    if qty_value <= 0:
+        return {"status": "error", "error": "quantity must be positive"}
+
+    type_token = str(order_type or "").strip().lower()
+    if type_token not in ("market", "limit"):
+        return {"status": "error", "error": "order_type must be 'market' or 'limit'"}
+
+    tif_token = str(time_in_force or "").strip().lower()
+    if tif_token not in _FUTURES_TIME_IN_FORCE:
+        return {"status": "error", "error": "time_in_force must be 'rod', 'ioc', or 'fok'"}
+    if type_token == "market" and tif_token == "rod":
+        return {"status": "error", "error": "a market order must use time_in_force 'ioc' or 'fok' (TAIFEX rejects market+rod)"}
+
+    octype_token = str(octype or "").strip().lower()
+    if octype_token not in ("auto", "new", "cover", "daytrade"):
+        return {"status": "error", "error": "octype must be 'auto', 'new', 'cover', or 'daytrade'"}
+
+    limit_value: float | None = None
+    if type_token == "limit":
+        if limit_price is None:
+            return {"status": "error", "error": "limit order requires limit_price"}
+        try:
+            limit_value = float(limit_price)
+        except (TypeError, ValueError):
+            return {"status": "error", "error": "limit_price must be numeric"}
+        if limit_value <= 0:
+            return {"status": "error", "error": "limit_price must be positive"}
+
+    sj = _require_shioaji()
+    api = _login(cfg)
+    try:
+        contract = _resolve_contract(api, clean_symbol)
+        if contract is None:
+            return {"status": "error", "error": f"no Shioaji contract for {clean_symbol}"}
+
+        account = _futopt_account(api)
+        if account is None:
+            return {"status": "error", "error": "no futures account signed in for this profile"}
+
+        order = sj.FuturesOrder(
+            price=limit_value if limit_value is not None else 0,
+            quantity=qty_value,
+            action=sj.Action.Buy if side_token == "buy" else sj.Action.Sell,
+            price_type=sj.FuturesPriceType.LMT if type_token == "limit" else sj.FuturesPriceType.MKT,
+            order_type={"rod": sj.OrderType.ROD, "ioc": sj.OrderType.IOC, "fok": sj.OrderType.FOK}[tif_token],
+            octype={
+                "auto": sj.FuturesOCType.Auto,
+                "new": sj.FuturesOCType.New,
+                "cover": sj.FuturesOCType.Cover,
+                "daytrade": sj.FuturesOCType.DayTrade,
+            }[octype_token],
+            account=account,
+        )
+        with suppress_native_stdout():
+            trade = api.place_order(contract, order)
+            # Do NOT call api.update_status(trade=trade) here: confirmed live
+            # (2026-07-02) that calling it immediately after place_order races
+            # the SDK's own internal order-event handling and panics the Rust
+            # extension ("Already borrowed: PyBorrowMutError") -- a
+            # pyo3_runtime.PanicException, which subclasses BaseException
+            # directly, not Exception, so it is NOT caught below and would
+            # crash the whole process. trade.status.status is whatever the
+            # exchange acknowledged synchronously (commonly PendingSubmit);
+            # callers must poll get_open_orders() in a separate call for the
+            # settled status (see ORDERS.md "Order Status").
+    except Exception as exc:  # noqa: BLE001 - submission errors are reported, not raised
+        return {"status": "error", "error": str(exc)}
+    finally:
+        _logout_best_effort(api)
+
+    row = _trade_to_dict(trade)
+    return {
+        "status": "ok",
+        "order_id": row["order_id"],
+        "symbol": clean_symbol,
+        "side": side_token,
+        "profile": cfg.profile,
+        "simulation": cfg.simulation,
+        "order_type": type_token,
+        "time_in_force": tif_token,
+        "octype": octype_token,
+        "quantity": qty_value,
+        "limit_price": limit_value,
+        "order_status": row["status"],
+        "filled_qty": _obj_get(_obj_get(trade, "status"), "deal_quantity"),
+    }
+
+
+def cancel_order(
+    config: ShioajiConfig | None = None,
+    order_id: str = "",
+    *,
+    symbol: str | None = None,
+) -> dict[str, Any]:
+    """Cancel an open futures order on the configured Shioaji account.
+
+    Simulation-only, same guard as :func:`place_order`. Shioaji's
+    ``cancel_order`` takes a live ``Trade`` object, not a bare id, so this
+    looks the order up via ``list_trades()`` by ``trade.order.id`` first --
+    synced from the server first via ``update_status`` since this connector
+    logs in fresh per call (see ``_login``): confirmed live (2026-07-02)
+    that a plain ``list_trades()`` in a brand-new session is empty even for
+    an order placed moments earlier in a different session/call.
+
+    Args:
+        config: Connector config; falls back to the saved config when ``None``.
+        order_id: The Shioaji ``trade.order.id`` to cancel.
+        symbol: Optional symbol, echoed back for caller bookkeeping only;
+            lookup is purely by ``order_id``.
+
+    Returns:
+        On success ``{"status": "ok", "order_id", "symbol", "profile",
+        "simulation", "cancelled"}``. On invalid input, an unmatched
+        ``order_id``, cancel failure, or a non-simulation profile,
+        ``{"status": "error", "error": <message>}`` -- fails closed, never
+        raises.
+    """
+    cfg = config or load_config()
+    if not cfg.simulation:
+        return {"status": "error", "error": _PAPER_ONLY_ERROR}
+
+    clean_id = str(order_id or "").strip()
+    if not clean_id:
+        return {"status": "error", "error": "order_id is required"}
+
+    api = _login(cfg)
+    try:
+        _sync_trade_status(api)
+        trades = _safe_call(api, "list_trades") or []
+        target = next((t for t in trades if str(_obj_get(_obj_get(t, "order"), "id")) == clean_id), None)
+        if target is None:
+            return {"status": "error", "error": f"no open trade found for order_id {clean_id}"}
+        with suppress_native_stdout():
+            api.cancel_order(target)
+    except Exception as exc:  # noqa: BLE001 - cancel errors are reported, not raised
+        return {"status": "error", "error": str(exc)}
+    finally:
+        _logout_best_effort(api)
+
+    return {
+        "status": "ok",
+        "order_id": clean_id,
+        "symbol": symbol.strip() if isinstance(symbol, str) and symbol.strip() else None,
+        "profile": cfg.profile,
+        "simulation": cfg.simulation,
+        "cancelled": True,
+    }
+
+
+def _futopt_account(api: Any) -> Any:
+    """Return the logged-in session's futures/options account, or ``None``."""
+    return getattr(api, "futopt_account", None)
+
+
+def _sync_trade_status(api: Any) -> None:
+    """Pull server-side order/deal state into this session's local trade cache.
+
+    ``_login`` logs in fresh for every call (no session reuse across
+    connector functions), so ``list_trades()`` reflects only what happened
+    within the *current* session -- confirmed live (2026-07-02) that an
+    order placed by a prior call is invisible to a new session's
+    ``list_trades()`` without this sync first. Best-effort per account
+    (``update_status`` failures must never block the caller from reading
+    whatever the cache already has).
+    """
+    for account_attr in ("stock_account", "futopt_account"):
+        account = getattr(api, account_attr, None)
+        if account is not None:
+            _safe_call(api, "update_status", account)
 
 
 # ---------------------------------------------------------------------------

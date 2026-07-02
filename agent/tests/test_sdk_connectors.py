@@ -623,10 +623,19 @@ def test_shioaji_redacts_secrets() -> None:
     assert pub["api_key"].endswith("***")
 
 
-def test_shioaji_order_placement_not_implemented() -> None:
-    """This phase is read-only -- no place_order/cancel_order function exists."""
-    assert not hasattr(sj, "place_order")
-    assert not hasattr(sj, "cancel_order")
+def test_shioaji_place_order_refuses_non_simulation() -> None:
+    """No runtime paper/live discriminator -- structurally capped at paper."""
+    cfg = sj.ShioajiConfig(api_key="k", secret_key="s", profile="live-readonly")
+    result = sj.place_order(cfg, symbol="TXFR1.TWF", side="buy", quantity=1)
+    assert result["status"] == "error"
+    assert "paper-only" in result["error"]
+
+
+def test_shioaji_cancel_order_refuses_non_simulation() -> None:
+    cfg = sj.ShioajiConfig(api_key="k", secret_key="s", profile="live-readonly")
+    result = sj.cancel_order(cfg, "ORD1")
+    assert result["status"] == "error"
+    assert "paper-only" in result["error"]
 
 
 def test_shioaji_classification() -> None:
@@ -748,3 +757,221 @@ def test_shioaji_history_resamples_minute_kbars_to_daily(monkeypatch) -> None:
     assert result["bars"][0]["open"] == 600.0
     assert result["bars"][0]["high"] == 603.0  # max(602, 603) across the day's two bars
     assert result["bars"][0]["volume"] == 300.0  # 100 + 200 summed
+
+
+# --------------------------------------------------------------------------- #
+# Shioaji: futures order placement (simulation-only)
+# --------------------------------------------------------------------------- #
+
+
+class _FakeFuturesContract:
+    code = "TXFR1"
+
+
+class _FakeTXFCategory:
+    TXFR1 = _FakeFuturesContract()
+
+
+class _FakeFuturesContracts:
+    Futures = type("F", (), {"TXF": _FakeTXFCategory()})()
+    Stocks: dict = {}
+
+
+class _FakeTradeStatus:
+    def __init__(self, status="PendingSubmit", deal_quantity=0):
+        self.status = status
+        self.deal_quantity = deal_quantity
+
+
+class _FakeOrder:
+    def __init__(self, id="ORD1", action="Buy", price=18000, quantity=1):
+        self.id = id
+        self.action = action
+        self.price = price
+        self.quantity = quantity
+
+
+class _FakeTrade:
+    def __init__(self, order_id="ORD1", status="PendingSubmit"):
+        self.contract = _FakeFuturesContract()
+        self.order = _FakeOrder(id=order_id)
+        self.status = _FakeTradeStatus(status=status)
+
+
+class _FakeFutOptAccount:
+    pass
+
+
+class _FakeShioajiOrderApi:
+    Contracts = _FakeFuturesContracts()
+    futopt_account = _FakeFutOptAccount()
+
+    def __init__(self, no_futopt_account: bool = False) -> None:
+        self.placed: list = []
+        self.updated: list = []
+        self.cancelled: list = []
+        self._trades: list = []
+        if no_futopt_account:
+            self.futopt_account = None
+
+    def place_order(self, contract, order):
+        trade = _FakeTrade(order_id="ORD1", status="PendingSubmit")
+        self.placed.append((contract, order))
+        self._trades.append(trade)
+        return trade
+
+    def update_status(self, account=None, trade=None, **kwargs):
+        # _sync_trade_status calls this positionally with an account (to sync
+        # the server-side trade cache); nothing else in this fake calls it
+        # with trade= anymore since place_order no longer does the racy
+        # post-place reconciliation call.
+        self.updated.append(account if account is not None else trade)
+
+    def list_trades(self):
+        return self._trades
+
+    def cancel_order(self, trade):
+        trade.status.status = "Cancelled"
+        self.cancelled.append(trade)
+
+    def logout(self):
+        return True
+
+
+class _FakeFuturesOrder:
+    def __init__(self, **kwargs) -> None:
+        self.__dict__.update(kwargs)
+
+
+class _FakeShioajiSDKModule:
+    """Stand-in for the ``shioaji`` package's order-construction surface.
+
+    The real SDK's ``FuturesOrder``/``Action``/etc. are Rust-backed pydantic
+    models that reject plain-Python stand-in objects (e.g. ``account`` must
+    be a real ``shioaji.Account`` instance) -- so connector-level tests patch
+    ``_require_shioaji`` to return this lenient fake instead of exercising
+    the real SDK's type validation.
+    """
+
+    class Action:
+        Buy = "Buy"
+        Sell = "Sell"
+
+    class FuturesPriceType:
+        LMT = "LMT"
+        MKT = "MKT"
+
+    class OrderType:
+        ROD = "ROD"
+        IOC = "IOC"
+        FOK = "FOK"
+
+    class FuturesOCType:
+        Auto = "Auto"
+        New = "New"
+        Cover = "Cover"
+        DayTrade = "DayTrade"
+
+    FuturesOrder = _FakeFuturesOrder
+
+
+def _shioaji_paper_cfg() -> "sj.ShioajiConfig":
+    return sj.ShioajiConfig(api_key="k", secret_key="s", profile="paper")
+
+
+def test_shioaji_place_order_rejects_non_futures_symbol() -> None:
+    result = sj.place_order(_shioaji_paper_cfg(), symbol="2330.TW", side="buy", quantity=1)
+    assert result["status"] == "error"
+    assert "TWF" in result["error"]
+
+
+def test_shioaji_place_order_rejects_notional() -> None:
+    result = sj.place_order(_shioaji_paper_cfg(), symbol="TXFR1.TWF", side="buy", notional=1000)
+    assert result["status"] == "error"
+    assert "notional" in result["error"]
+
+
+def test_shioaji_place_order_requires_quantity() -> None:
+    result = sj.place_order(_shioaji_paper_cfg(), symbol="TXFR1.TWF", side="buy")
+    assert result["status"] == "error"
+    assert "quantity" in result["error"]
+
+
+def test_shioaji_place_order_rejects_market_rod() -> None:
+    """TAIFEX rejects MKT+ROD (op_code 9938) -- must be caught before any SDK call."""
+    result = sj.place_order(
+        _shioaji_paper_cfg(), symbol="TXFR1.TWF", side="buy", quantity=1,
+        order_type="market", time_in_force="rod",
+    )
+    assert result["status"] == "error"
+    assert "market" in result["error"].lower()
+
+
+def test_shioaji_place_order_limit_requires_price() -> None:
+    result = sj.place_order(
+        _shioaji_paper_cfg(), symbol="TXFR1.TWF", side="buy", quantity=1, order_type="limit",
+    )
+    assert result["status"] == "error"
+    assert "limit_price" in result["error"]
+
+
+def test_shioaji_place_order_success(monkeypatch) -> None:
+    fake = _FakeShioajiOrderApi()
+    monkeypatch.setattr(sj, "_login", lambda cfg: fake)
+    monkeypatch.setattr(sj, "_require_shioaji", lambda: _FakeShioajiSDKModule)
+
+    result = sj.place_order(
+        _shioaji_paper_cfg(), symbol="TXFR1.TWF", side="buy", quantity=1,
+        order_type="limit", limit_price=18000, time_in_force="rod",
+    )
+
+    assert result["status"] == "ok"
+    assert result["order_id"] == "ORD1"
+    assert result["simulation"] is True
+    assert result["order_status"] == "PendingSubmit"  # immediate post-place status, not polled further
+    assert len(fake.placed) == 1
+    assert len(fake.updated) == 0  # update_status must NOT be called right after place_order (SDK panic)
+
+
+def test_shioaji_place_order_no_futopt_account(monkeypatch) -> None:
+    fake = _FakeShioajiOrderApi(no_futopt_account=True)
+    monkeypatch.setattr(sj, "_login", lambda cfg: fake)
+    monkeypatch.setattr(sj, "_require_shioaji", lambda: _FakeShioajiSDKModule)
+
+    result = sj.place_order(
+        _shioaji_paper_cfg(), symbol="TXFR1.TWF", side="buy", quantity=1,
+        order_type="limit", limit_price=18000,
+    )
+    assert result["status"] == "error"
+    assert "account" in result["error"]
+
+
+def test_shioaji_cancel_order_success(monkeypatch) -> None:
+    fake = _FakeShioajiOrderApi()
+    fake._trades.append(_FakeTrade(order_id="ORD1"))
+    monkeypatch.setattr(sj, "_login", lambda cfg: fake)
+
+    result = sj.cancel_order(_shioaji_paper_cfg(), "ORD1")
+
+    assert result["status"] == "ok"
+    assert result["cancelled"] is True
+    assert len(fake.cancelled) == 1
+
+
+def test_shioaji_cancel_order_not_found(monkeypatch) -> None:
+    fake = _FakeShioajiOrderApi()
+    monkeypatch.setattr(sj, "_login", lambda cfg: fake)
+
+    result = sj.cancel_order(_shioaji_paper_cfg(), "NOPE")
+
+    assert result["status"] == "error"
+    assert "no open trade" in result["error"]
+
+
+def test_shioaji_paper_trade_profile_registered() -> None:
+    profile = profiles.profile_by_id("shioaji-paper-trade")
+    assert profile.connector == "shioaji"
+    assert profile.environment == "paper"
+    assert profile.transport == "broker_sdk"
+    assert profile.readonly is False
+    assert "orders.place" in profile.capabilities
