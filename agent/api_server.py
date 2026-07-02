@@ -465,6 +465,12 @@ class LiveStatusResponse(BaseModel):
     brokers: List[LiveBrokerStatus]
 
 
+class ChannelPairingCommandRequest(BaseModel):
+    """Pairing command executed through the IM control surface."""
+
+    channel: str = Field(..., min_length=1, max_length=64)
+    command: str = Field("list", max_length=500)
+
 
 # ============================================================================
 # FastAPI Application
@@ -554,6 +560,14 @@ def _is_allowed_loopback_host(host: str) -> bool:
     return normalized in _DEFAULT_LOOPBACK_HOSTS or normalized in _EXTRA_LOOPBACK_HOSTS
 
 
+def _is_loopback_bind_host(host: str) -> bool:
+    """Return whether ``host`` resolves to a loopback interface."""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
+
+
 # CORS: override with CORS_ORIGINS (comma-separated explicit origins)
 _CORS_ORIGINS = _parse_cors_origins(os.getenv("CORS_ORIGINS"))
 
@@ -639,11 +653,14 @@ async def _run_startup_preflight() -> None:
 
     run_preflight(console)
     _start_scheduled_research_executor()
+    if os.getenv("VIBE_TRADING_CHANNELS_AUTO_START", "").strip().lower() in {"1", "true", "yes"}:
+        await _start_channel_runtime()
 
 
 @app.on_event("shutdown")
 async def _stop_scheduled_research_on_shutdown() -> None:
     """Stop the scheduled research executor on server shutdown."""
+    await _stop_channel_runtime()
     await _stop_scheduled_research_executor()
 
 
@@ -1747,6 +1764,39 @@ async def health_check():
     )
 
 
+@app.get("/channels/status", dependencies=[Depends(require_auth)])
+async def channels_status():
+    """Return IM channel runtime and adapter status."""
+    runtime = _get_channel_runtime()
+    return runtime.status()
+
+
+@app.post("/channels/start", dependencies=[Depends(require_auth)])
+async def channels_start():
+    """Start configured IM channel adapters."""
+    runtime = await _start_channel_runtime()
+    return {"status": "started", **runtime.status()}
+
+
+@app.post("/channels/stop", dependencies=[Depends(require_auth)])
+async def channels_stop():
+    """Stop configured IM channel adapters."""
+    runtime = _get_channel_runtime()
+    await runtime.stop()
+    return {"status": "stopped", **runtime.status()}
+
+
+@app.post("/channels/pairing/command", dependencies=[Depends(require_auth)])
+async def channels_pairing_command(payload: ChannelPairingCommandRequest):
+    """Run a pairing command against the shared pairing store."""
+    from src.channels.pairing import handle_pairing_command
+
+    return {
+        "channel": payload.channel,
+        "reply": handle_pairing_command(payload.channel, payload.command),
+    }
+
+
 @app.get("/correlation")
 async def get_correlation_matrix(
     codes: str = Query(..., description="Comma-separated asset codes, e.g. BTC-USDT,ETH-USDT,SPY"),
@@ -1835,6 +1885,9 @@ async def api_info():
 
 _session_service = None
 _goal_store = None
+_channel_runtime = None
+_channel_bus = None
+_channel_manager = None
 
 
 def _get_session_service():
@@ -1866,6 +1919,46 @@ def _get_session_service():
         runs_dir=RUNS_DIR,
     )
     return _session_service
+
+
+def _get_channel_runtime():
+    """Lazy-init IM channel runtime without starting platform adapters."""
+    global _channel_runtime, _channel_bus, _channel_manager
+    if _channel_runtime is not None:
+        return _channel_runtime
+
+    from src.channels.bus.queue import MessageBus
+    from src.channels.config import load_channels_config
+    from src.channels.manager import ChannelManager
+    from src.channels.runtime import ChannelRuntime
+
+    svc = _get_session_service()
+    if not svc:
+        raise HTTPException(status_code=501, detail="Session runtime not enabled")
+
+    _channel_bus = MessageBus()
+    config = load_channels_config()
+    _channel_manager = ChannelManager(config, _channel_bus, session_service=svc)
+    _channel_runtime = ChannelRuntime(
+        bus=_channel_bus,
+        session_service=svc,
+        manager=_channel_manager,
+    )
+    return _channel_runtime
+
+
+async def _start_channel_runtime():
+    """Start the IM channel runtime."""
+    runtime = _get_channel_runtime()
+    await runtime.start(start_manager=True)
+    return runtime
+
+
+async def _stop_channel_runtime() -> None:
+    """Stop the IM channel runtime if it was initialized."""
+    if _channel_runtime is None:
+        return
+    await _channel_runtime.stop()
 
 
 def _get_goal_store():
@@ -3543,12 +3636,19 @@ def serve_main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Vibe-Trading Server")
     parser.add_argument("--port", type=int, default=8000, help="Listen port (default 8000)")
-    parser.add_argument("--host", default="0.0.0.0", help="Bind address")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address")
     parser.add_argument("--dev", action="store_true", help="Dev mode: spawn Vite on :5173")
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 2
+
+    if not _is_loopback_bind_host(args.host) and not _configured_api_key():
+        print(
+            f"[warn] Binding to {args.host} without API_AUTH_KEY set. "
+            f"Remote requests are rejected by the loopback peer-IP check, "
+            f"but consider using --host 127.0.0.1 for local-only access."
+        )
 
     frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     frontend_root = Path(__file__).resolve().parent.parent / "frontend"
