@@ -596,3 +596,118 @@ def _resample_taifex_daily(minute_df: pd.DataFrame) -> pd.DataFrame:
     agg = minute_df[valid.to_numpy()].groupby(trading_day[valid]).agg(_OHLCV_AGG)
     agg.index.name = minute_df.index.name
     return agg.dropna(subset=["open", "high", "low", "close"])
+
+
+# ---------------------------------------------------------------------------
+# Continuous-contract (R1/R2) rollover back-adjustment.
+# ---------------------------------------------------------------------------
+
+ROLLOVER_ADJUST_ENV = "VIBE_TRADING_TAIFEX_ROLLOVER_ADJUST"
+
+#: The splice in Shioaji's R1/R2 continuous kbars history sits at
+#: 13:30 -> 13:31 on each settlement date (3rd Wednesday of the month,
+#: shifted to the next trading day when that Wednesday is a holiday): the
+#: expiring contract's final-settlement trade prints at 13:30, and from the
+#: 13:31 bar the alias points at the next month. Confirmed empirically on
+#: the full 2020-2026 TXFR1 history (e.g. 2025-06-18: 22308 -> 21909,
+#: -1.79%, the June dividend-season discount; 2026-06-17: 45668 -> 46012,
+#: +0.75% contango). Left unadjusted, those 78 splices embedded a
+#: cumulative -15.8% (x0.853 compounded) phantom return into the raw
+#: series -- a pure artifact: a position holder's P&L is continuous
+#: through a roll.
+_ROLL_SPLICE_LAST_OLD = dt.time(13, 30)
+_ROLL_NEW_WINDOW_END = dt.time(13, 36)
+
+
+def rollover_adjust_enabled() -> bool:
+    """Whether continuous-contract back-adjustment is enabled (default on)."""
+    return os.getenv(ROLLOVER_ADJUST_ENV, "").strip().lower() not in _MINUTE_CACHE_FALSE_VALUES
+
+
+def is_continuous_futures_symbol(symbol: str) -> bool:
+    """``TXFR1.TWF``/``MXFR2.TWF``-style continuous aliases (they roll);
+    dated contracts (e.g. ``TXFG6.TWF``) never splice and must not be touched."""
+    code = symbol.split(".")[0].upper()
+    return code.endswith(("R1", "R2"))
+
+
+def _settlement_dates(day_session_dates: List[pd.Timestamp]) -> List[pd.Timestamp]:
+    """TAIFEX settlement dates within the data's span: 3rd Wednesday of each
+    month, shifted to the next in-data trading day when it falls on a holiday."""
+    if not day_session_dates:
+        return []
+    out = []
+    cur = day_session_dates[0].replace(day=1)
+    last = day_session_dates[-1]
+    while cur <= last:
+        first_dow = cur.dayofweek  # 0=Mon..6=Sun; Wednesday=2
+        offset = (2 - first_dow) % 7
+        third_wed = cur + pd.Timedelta(days=offset + 14)
+        i = bisect.bisect_left(day_session_dates, third_wed)
+        if i < len(day_session_dates):
+            candidate = day_session_dates[i]
+            # A holiday shift never moves settlement past the following Tuesday;
+            # anything further means the data simply doesn't cover this month.
+            if (candidate - third_wed).days <= 4 and (not out or candidate != out[-1]):
+                out.append(candidate)
+        cur = (cur + pd.Timedelta(days=32)).replace(day=1)
+    return out
+
+
+def back_adjust_taifex_rollovers(minute_df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """Ratio back-adjustment of a continuous (R1/R2) minute series in place
+    of the raw splice, so returns are continuous through contract rolls.
+
+    At each settlement date the ratio ``new/old`` is measured across the
+    13:30 -> 13:31 splice, and every bar at or before the splice is scaled
+    by the cumulative product of all later ratios (proportional/ratio
+    method -- preserves returns exactly; the Panama/difference method
+    distorts percentage returns and can go negative on long histories).
+    O/H/L/C are scaled; volume is not. A roll whose boundary bars are
+    missing from the data is skipped with a warning (that one splice
+    remains raw rather than guessing a ratio).
+
+    MUST be applied to the frame *served from* the cache, never persisted
+    into it: adjustment factors change with every future roll, so cached
+    data stays raw and adjustment is recomputed per call.
+
+    Adjusted price *levels* are an analytical series, not tradeable prices
+    -- only returns are meaningful. Recent bars (after the last roll) keep
+    factor 1.0, so live-quote comparisons against the newest bars still work.
+    """
+    if minute_df.empty or not is_continuous_futures_symbol(symbol):
+        return minute_df
+
+    times = minute_df.index.time
+    dates = minute_df.index.normalize()
+    dow = minute_df.index.dayofweek
+    is_day = (dow <= 4) & (times >= _DAY_SESSION_START) & (times <= _DAY_SESSION_END)
+    day_session_dates = sorted(set(dates[is_day]))
+
+    splices: List[tuple[pd.Timestamp, float]] = []
+    for sd in _settlement_dates(day_session_dates):
+        day = minute_df[dates == sd]
+        old = day.between_time(dt.time(13, 20), _ROLL_SPLICE_LAST_OLD)
+        new = day.between_time(dt.time(13, 31), _ROLL_NEW_WINDOW_END)
+        if old.empty or new.empty:
+            print(f"[WARN] rollover adjust: no boundary bars on {sd.date()} for {symbol}, splice left raw")
+            continue
+        old_close = float(old["close"].iloc[-1])
+        new_open = float(new["open"].iloc[0])
+        if old_close <= 0 or new_open <= 0:
+            continue
+        splice_ts = sd + pd.Timedelta(hours=13, minutes=30, seconds=59)
+        splices.append((splice_ts, new_open / old_close))
+
+    if not splices:
+        return minute_df
+
+    adjusted = minute_df.copy()
+    factor = pd.Series(1.0, index=adjusted.index)
+    cumulative = 1.0
+    for splice_ts, ratio in sorted(splices, key=lambda s: s[0], reverse=True):
+        cumulative *= ratio
+        factor[adjusted.index <= splice_ts] = cumulative
+    for col in ("open", "high", "low", "close"):
+        adjusted[col] = adjusted[col] * factor
+    return adjusted

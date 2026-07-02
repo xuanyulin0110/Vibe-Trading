@@ -25,10 +25,12 @@ import pandas as pd
 
 from backtest.loaders._shioaji_kbars import (
     FETCH_WORKERS,
+    back_adjust_taifex_rollovers,
     clear_stale_shioaji_locks,
     fetch_minute_kbars_cached,
     is_supported_interval,
     resample_kbars,
+    rollover_adjust_enabled,
     suppress_native_stdout,
 )
 from backtest.loaders.base import validate_date_range, validate_ohlc
@@ -178,6 +180,11 @@ class DataLoader:
         )
         if minute_df.empty:
             return None
+
+        # Applied to the frame SERVED from the cache, never persisted into
+        # it -- adjustment factors change with every future roll.
+        if rollover_adjust_enabled():
+            minute_df = back_adjust_taifex_rollovers(minute_df, code)
 
         bars = resample_kbars(minute_df, interval, session_aware=True)
         bars = validate_ohlc(bars)
