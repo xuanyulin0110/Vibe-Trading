@@ -495,8 +495,10 @@ class BaseEngine(ABC):
                 config, equity_series, self.trades, self.initial_capital, bars_per_year,
             )
             m["validation"] = v_results
-            # Write validation.json artifact
+            # Write validation.json artifact (this runs before _write_artifacts
+            # below, so the directory doesn't exist yet on a fresh run_dir).
             v_path = run_dir / "artifacts" / "validation.json"
+            v_path.parent.mkdir(parents=True, exist_ok=True)
             v_path.write_text(json.dumps(v_results, indent=2, ensure_ascii=False), encoding="utf-8")
 
         # 8. Artifacts
