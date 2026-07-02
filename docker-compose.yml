@@ -54,6 +54,18 @@ services:
       - vibe-home:/home/vibe/.vibe-trading
       - vibe-swarm-runs:/app/agent/.swarm/runs
       - vibe-uploads:/app/agent/uploads
+    healthcheck:
+      # Override the image's baked-in HEALTHCHECK: that probes the API
+      # server's 8899/health, which doesn't run in this container (same
+      # image, different entrypoint), so the service showed permanently
+      # unhealthy while serving SSE traffic fine. A TCP connect on the SSE
+      # port is deliberate -- GET /sse opens a real MCP session per probe,
+      # so an HTTP check would leak a session every 30s.
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 8900), timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     restart: unless-stopped
 
   frontend:
