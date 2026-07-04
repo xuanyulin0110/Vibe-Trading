@@ -38,7 +38,7 @@ services:
     # reads -- this service has no separate app code of its own, just a
     # different entrypoint command into the same install.
     build: .
-    command: vibe-trading-mcp --transport sse --port 8900
+    command: vibe-trading-mcp --transport http --port 8900
     ports:
       - "8900:8900"
     env_file:

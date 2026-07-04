@@ -18,8 +18,9 @@ analysis. Every exposed tool is read-only or research-only; no order-placing or
 order-cancelling tool is ever surfaced via MCP.
 
 Usage:
-    python mcp_server.py                    # stdio transport (default)
-    python mcp_server.py --transport sse    # SSE transport for web clients
+    python mcp_server.py                     # stdio transport (default)
+    python mcp_server.py --transport http    # Streamable HTTP transport for network clients
+    python mcp_server.py --transport sse     # legacy SSE transport (kept for older clients)
 
 OpenClaw config (~/.openclaw/config.yaml):
     skills:
@@ -1903,23 +1904,29 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Vibe-Trading MCP Server")
-    parser.add_argument("--transport", choices=["stdio", "sse"], default="stdio", help="MCP transport (default: stdio)")
-    parser.add_argument("--port", type=int, default=8900, help="SSE port (only used with --transport sse)")
+    parser.add_argument(
+        "--transport", choices=["stdio", "http", "sse"], default="stdio",
+        help="MCP transport (default: stdio). 'http' is the current Streamable "
+             "HTTP standard (single /mcp endpoint, supports POST); 'sse' is the "
+             "older two-endpoint transport (GET /sse + POST /messages), kept "
+             "only for clients that haven't moved off it yet.",
+    )
+    parser.add_argument("--port", type=int, default=8900, help="Port (only used with --transport http/sse)")
     parser.add_argument(
         "--host", default="0.0.0.0",
-        help="SSE bind address (only used with --transport sse; default 0.0.0.0 -- "
-             "SSE exists for network clients, and FastMCP's own default of 127.0.0.1 "
-             "is unreachable through Docker's port mapping since that binds only the "
-             "container's internal loopback, not the bridge-network-facing interface "
-             "the port forward actually connects to)",
+        help="Bind address (only used with --transport http/sse; default 0.0.0.0 -- "
+             "these transports exist for network clients, and FastMCP's own default "
+             "of 127.0.0.1 is unreachable through Docker's port mapping since that "
+             "binds only the container's internal loopback, not the bridge-network-"
+             "facing interface the port forward actually connects to)",
     )
     args = parser.parse_args()
     _include_shell_tools = True if args.transport == "stdio" else _env_shell_tools_enabled()
     _registry = None
     _get_registry()  # pre-warm: avoids deadlock when first tools/call lazy-inits inside FastMCP worker thread
 
-    if args.transport == "sse":
-        mcp.run(transport="sse", host=args.host, port=args.port)
+    if args.transport in ("http", "sse"):
+        mcp.run(transport=args.transport, host=args.host, port=args.port)
     else:
         mcp.run()
 
