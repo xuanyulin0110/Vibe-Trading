@@ -72,9 +72,11 @@ services:
     image: node:20
     working_dir: /app
     ports:
-      - "127.0.0.1:5899:5899"
+      - "0.0.0.0:5899:5899"
     volumes:
       - ./frontend:/app
+    env_file:
+      - agent/.env
     environment:
       - VITE_API_URL=http://vibe-trading:8899
     command: sh -c "npm install && npm run dev -- --host --port 5899"
