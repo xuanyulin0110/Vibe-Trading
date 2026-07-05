@@ -405,6 +405,24 @@ class BaseEngine(ABC):
         interval = config.get("interval", "1D")
         extra_fields = config.get("extra_fields") or None
 
+        if extra_fields:
+            from backtest.engines._market_hooks import _detect_market
+
+            unsupported = [c for c in codes if _detect_market(c) in ("tw_equity", "tw_futures")]
+            if unsupported:
+                print(json.dumps({
+                    "error": (
+                        f"extra_fields is not supported for Taiwan equities/futures: {unsupported}. "
+                        "extra_fields only works for China A-shares (tushare). For Taiwan statement/"
+                        "chip data, use fundamental_fields instead -- a dict of table name -> field "
+                        'list, e.g. {"institutional": ["foreign_net"], "monthly_revenue": '
+                        '["revenue_yoy_pct"], "fundamental_features": ["roe"]}. See the '
+                        "strategy-generate skill's \"Market Detection and Data Sources\" section for "
+                        "the full Taiwan table/field list."
+                    )
+                }))
+                sys.exit(1)
+
         # 1. Load data
         data_map = loader.fetch(
             codes,

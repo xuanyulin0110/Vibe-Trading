@@ -94,8 +94,11 @@ class DataLoader:
             codes: Stock codes (e.g. ``2330.TW``).
             start_date: Start date (YYYY-MM-DD).
             end_date: End date (YYYY-MM-DD).
-            fields: Unused today -- reserved for 三大法人/融資融券/月營收
-                enrichment columns (Phase 2).
+            fields: Unused -- finlab has no per-code "extra columns" fetch of its
+                own (unlike tushare's extra_fields). 三大法人/融資融券/月營收/財報 etc.
+                enrichment is a separate code path: config.json's fundamental_fields,
+                handled by backtest.engines.base._maybe_enrich_fundamentals via
+                FinlabFundamentalProvider, applied after fetch() returns.
             interval: Only ``1D`` is supported; finlab's free tier is
                 daily-resolution only.
 

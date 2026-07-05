@@ -274,6 +274,80 @@ class TestSymbolIsolation:
                 },
             )
 
+    def test_extra_fields_on_tw_codes_fails_fast_with_guidance(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """extra_fields silently no-ops on TW loaders (finlab/shioaji don't use it) --
+        catch that at config time instead of returning bare OHLCV with no explanation.
+
+        Regression test: a real Claude Code + Antigravity CLI session (2026-07)
+        set extra_fields with dotted "table.field" strings for a TW backtest, got
+        5 plain OHLCV columns back with no error, and concluded the platform
+        didn't support statement/chip enrichment for Taiwan at all -- it does,
+        via fundamental_fields (a different key), just not via extra_fields.
+        """
+        from backtest.engines.tw_equity import TWEquityEngine
+
+        engine = TWEquityEngine({"initial_cash": 1_000_000})
+        with pytest.raises(SystemExit):
+            engine.run_backtest(
+                {
+                    "codes": ["2330.TW"],
+                    "extra_fields": ["roe"],
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-06-30",
+                },
+                loader=None,
+                signal_engine=None,
+                run_dir=None,
+            )
+
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert "2330.TW" in error
+        assert "fundamental_fields" in error
+
+    def test_extra_fields_on_a_share_codes_is_unaffected(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """The new TW guard must not reject extra_fields for its actual (A-share) use case."""
+        dates = pd.bdate_range("2024-04-01", periods=3)
+        bars = pd.DataFrame(
+            {
+                "open": [10.0, 11.0, 12.0],
+                "high": [10.5, 11.5, 12.5],
+                "low": [9.5, 10.5, 11.5],
+                "close": [10.2, 11.2, 12.2],
+                "volume": [1000, 1100, 1200],
+                "pe": [15.0, 15.1, 15.2],
+            },
+            index=dates,
+        )
+
+        class FakeLoader:
+            def fetch(self, *args, **kwargs):
+                return {"000001.SZ": bars.copy()}
+
+        class SignalEngine:
+            def generate(self, data_map):
+                return {"000001.SZ": pd.Series(0.0, index=data_map["000001.SZ"].index)}
+
+        engine = ChinaAEngine({"initial_cash": 1_000_000})
+        engine.run_backtest(
+            {
+                "codes": ["000001.SZ"],
+                "extra_fields": ["pe"],
+                "start_date": "2024-04-01",
+                "end_date": "2024-04-30",
+                "initial_cash": 1_000_000,
+            },
+            FakeLoader(),
+            SignalEngine(),
+            tmp_path,
+        )
+
 
 # ---------------------------------------------------------------------------
 # 3. Config schema validation (pydantic)

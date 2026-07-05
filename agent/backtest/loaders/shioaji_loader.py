@@ -104,7 +104,9 @@ class DataLoader:
             codes: Stock codes (e.g. ``2330.TW``).
             start_date: Start date (YYYY-MM-DD).
             end_date: End date (YYYY-MM-DD).
-            fields: Unused today -- reserved for future enrichment.
+            fields: Unused -- see finlab_loader.fetch()'s docstring; statement/chip
+                enrichment goes through config.json's fundamental_fields instead,
+                not this parameter.
             interval: 1m/5m/15m/30m/1H/4H/1D (default ``1D``).
 
         Returns:
