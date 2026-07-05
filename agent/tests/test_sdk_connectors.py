@@ -601,6 +601,26 @@ def test_shoonya_service_unconfigured(monkeypatch, tmp_path) -> None:
 def test_shioaji_simulation_flag_mapping() -> None:
     assert sj.ShioajiConfig(profile="paper").simulation is True
     assert sj.ShioajiConfig(profile="live-readonly").simulation is False
+    assert sj.ShioajiConfig(profile="live").simulation is False
+
+
+def test_shioaji_live_profile_requires_ca_fields() -> None:
+    cfg = sj.ShioajiConfig(api_key="k", secret_key="s", profile="live")
+    missing = sj._missing_fields(cfg)
+    assert "ca_path" in missing
+    assert "ca_passwd" in missing
+    ready = sj.ShioajiConfig(
+        api_key="k", secret_key="s", profile="live", ca_path="/x/ca.pfx", ca_passwd="pw",
+    )
+    assert sj._missing_fields(ready) == []
+
+
+def test_shioaji_config_roundtrips_ca_fields() -> None:
+    cfg = sj.ShioajiConfig.from_mapping(
+        {"api_key": "k", "secret_key": "s", "profile": "live", "ca_path": " /x/ca.pfx ", "ca_passwd": "pw"},
+    )
+    assert cfg.ca_path == "/x/ca.pfx"
+    assert cfg.ca_passwd == "pw"
 
 
 def test_shioaji_build_config_merges_profile_then_overrides(monkeypatch, tmp_path) -> None:
@@ -623,19 +643,50 @@ def test_shioaji_redacts_secrets() -> None:
     assert pub["api_key"].endswith("***")
 
 
-def test_shioaji_place_order_refuses_non_simulation() -> None:
-    """No runtime paper/live discriminator -- structurally capped at paper."""
+def test_shioaji_place_order_refuses_live_readonly() -> None:
+    """live-readonly never places orders, even with allow_live=True."""
     cfg = sj.ShioajiConfig(api_key="k", secret_key="s", profile="live-readonly")
-    result = sj.place_order(cfg, symbol="TXFR1.TWF", side="buy", quantity=1)
-    assert result["status"] == "error"
-    assert "paper-only" in result["error"]
+    for allow in (False, True):
+        result = sj.place_order(cfg, symbol="TXFR1.TWF", side="buy", quantity=1, allow_live=allow)
+        assert result["status"] == "error"
+        assert "live-readonly" in result["error"]
 
 
-def test_shioaji_cancel_order_refuses_non_simulation() -> None:
+def test_shioaji_cancel_order_refuses_live_readonly() -> None:
     cfg = sj.ShioajiConfig(api_key="k", secret_key="s", profile="live-readonly")
     result = sj.cancel_order(cfg, "ORD1")
     assert result["status"] == "error"
-    assert "paper-only" in result["error"]
+    assert "live-readonly" in result["error"]
+
+
+def test_shioaji_live_profile_requires_explicit_allow_live() -> None:
+    """Triple gate leg 1: profile=live without allow_live=True fails closed."""
+    cfg = sj.ShioajiConfig(
+        api_key="k", secret_key="s", profile="live", ca_path="/x/ca.pfx", ca_passwd="pw",
+    )
+    result = sj.place_order(cfg, symbol="TXFR1.TWF", side="buy", quantity=1)
+    assert result["status"] == "error"
+    assert "allow_live" in result["error"]
+    cancel = sj.cancel_order(cfg, "ORD1")
+    assert cancel["status"] == "error"
+    assert "allow_live" in cancel["error"]
+
+
+def test_shioaji_live_ca_failure_is_reported_not_raised(monkeypatch) -> None:
+    """Triple gate leg 3: CA activation failure at login surfaces as an error dict."""
+    def _failing_login(cfg):
+        raise sj.ShioajiConfigError("CA activation failed: bad password")
+
+    monkeypatch.setattr(sj, "_login", _failing_login)
+    monkeypatch.setattr(sj, "_require_shioaji", lambda: _FakeShioajiSDKModule)
+    cfg = sj.ShioajiConfig(
+        api_key="k", secret_key="s", profile="live", ca_path="/x/ca.pfx", ca_passwd="pw",
+    )
+    result = sj.place_order(
+        cfg, symbol="TXFR1.TWF", side="buy", quantity=1, time_in_force="ioc", allow_live=True,
+    )
+    assert result["status"] == "error"
+    assert "CA activation failed" in result["error"]
 
 
 def test_shioaji_classification() -> None:
@@ -760,7 +811,7 @@ def test_shioaji_history_resamples_minute_kbars_to_daily(monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Shioaji: futures order placement (simulation-only)
+# Shioaji: order placement (futures + TW equity)
 # --------------------------------------------------------------------------- #
 
 
@@ -772,9 +823,13 @@ class _FakeTXFCategory:
     TXFR1 = _FakeFuturesContract()
 
 
+class _FakeStockContract:
+    code = "2330"
+
+
 class _FakeFuturesContracts:
     Futures = type("F", (), {"TXF": _FakeTXFCategory()})()
-    Stocks: dict = {}
+    Stocks: dict = {"2330": _FakeStockContract()}
 
 
 class _FakeTradeStatus:
@@ -802,17 +857,25 @@ class _FakeFutOptAccount:
     pass
 
 
+class _FakeStockAccount:
+    pass
+
+
 class _FakeShioajiOrderApi:
     Contracts = _FakeFuturesContracts()
     futopt_account = _FakeFutOptAccount()
+    stock_account = _FakeStockAccount()
 
-    def __init__(self, no_futopt_account: bool = False) -> None:
+    def __init__(self, no_futopt_account: bool = False, no_stock_account: bool = False) -> None:
         self.placed: list = []
         self.updated: list = []
         self.cancelled: list = []
+        self.logged_out = 0
         self._trades: list = []
         if no_futopt_account:
             self.futopt_account = None
+        if no_stock_account:
+            self.stock_account = None
 
     def place_order(self, contract, order):
         trade = _FakeTrade(order_id="ORD1", status="PendingSubmit")
@@ -835,6 +898,7 @@ class _FakeShioajiOrderApi:
         self.cancelled.append(trade)
 
     def logout(self):
+        self.logged_out += 1
         return True
 
 
@@ -861,6 +925,10 @@ class _FakeShioajiSDKModule:
         LMT = "LMT"
         MKT = "MKT"
 
+    class StockPriceType:
+        LMT = "LMT"
+        MKT = "MKT"
+
     class OrderType:
         ROD = "ROD"
         IOC = "IOC"
@@ -872,17 +940,21 @@ class _FakeShioajiSDKModule:
         Cover = "Cover"
         DayTrade = "DayTrade"
 
+    class StockOrderLot:
+        Common = "Common"
+
     FuturesOrder = _FakeFuturesOrder
+    StockOrder = _FakeFuturesOrder
 
 
 def _shioaji_paper_cfg() -> "sj.ShioajiConfig":
     return sj.ShioajiConfig(api_key="k", secret_key="s", profile="paper")
 
 
-def test_shioaji_place_order_rejects_non_futures_symbol() -> None:
-    result = sj.place_order(_shioaji_paper_cfg(), symbol="2330.TW", side="buy", quantity=1)
+def test_shioaji_place_order_rejects_unknown_market_suffix() -> None:
+    result = sj.place_order(_shioaji_paper_cfg(), symbol="AAPL.US", side="buy", quantity=1)
     assert result["status"] == "error"
-    assert "TWF" in result["error"]
+    assert ".TWF" in result["error"] and ".TW" in result["error"]
 
 
 def test_shioaji_place_order_rejects_notional() -> None:
@@ -944,6 +1016,84 @@ def test_shioaji_place_order_no_futopt_account(monkeypatch) -> None:
     )
     assert result["status"] == "error"
     assert "account" in result["error"]
+
+
+def test_shioaji_place_stock_order_success_market_rod(monkeypatch) -> None:
+    """TW equity: quantity in shares, converted to Common board lots; market+rod is legal on TWSE."""
+    fake = _FakeShioajiOrderApi()
+    monkeypatch.setattr(sj, "_login", lambda cfg: fake)
+    monkeypatch.setattr(sj, "_require_shioaji", lambda: _FakeShioajiSDKModule)
+
+    result = sj.place_order(
+        _shioaji_paper_cfg(), symbol="2330.TW", side="buy", quantity=2000,
+        order_type="market", time_in_force="rod",
+    )
+
+    assert result["status"] == "ok"
+    assert result["quantity"] == 2000
+    assert result["order_lots"] == 2
+    assert len(fake.placed) == 1
+    _, placed_order = fake.placed[0]
+    assert placed_order.quantity == 2
+    assert placed_order.order_lot == "Common"
+    assert placed_order.account is fake.stock_account
+    assert len(fake.updated) == 0  # same no-post-place-update_status rule as futures
+
+
+def test_shioaji_place_stock_order_rejects_odd_lot() -> None:
+    result = sj.place_order(_shioaji_paper_cfg(), symbol="2330.TW", side="buy", quantity=1500)
+    assert result["status"] == "error"
+    assert "1000" in result["error"]
+
+
+def test_shioaji_place_stock_order_rejects_octype() -> None:
+    result = sj.place_order(
+        _shioaji_paper_cfg(), symbol="2330.TW", side="buy", quantity=1000, octype="cover",
+    )
+    assert result["status"] == "error"
+    assert "octype" in result["error"]
+
+
+def test_shioaji_place_stock_order_no_stock_account(monkeypatch) -> None:
+    fake = _FakeShioajiOrderApi(no_stock_account=True)
+    monkeypatch.setattr(sj, "_login", lambda cfg: fake)
+    monkeypatch.setattr(sj, "_require_shioaji", lambda: _FakeShioajiSDKModule)
+
+    result = sj.place_order(_shioaji_paper_cfg(), symbol="2330.TW", side="buy", quantity=1000)
+    assert result["status"] == "error"
+    assert "stock account" in result["error"]
+
+
+def test_shioaji_place_order_reuses_injected_session_without_logout(monkeypatch) -> None:
+    """The deploy runtime's persistent session must not be logged out per order."""
+    fake = _FakeShioajiOrderApi()
+    monkeypatch.setattr(sj, "_require_shioaji", lambda: _FakeShioajiSDKModule)
+    monkeypatch.setattr(
+        sj, "_login",
+        lambda cfg: (_ for _ in ()).throw(AssertionError("must not login when api is injected")),
+    )
+
+    result = sj.place_order(
+        _shioaji_paper_cfg(), symbol="TXFR1.TWF", side="buy", quantity=1,
+        order_type="limit", limit_price=18000, api=fake,
+    )
+
+    assert result["status"] == "ok"
+    assert fake.logged_out == 0
+
+
+def test_shioaji_cancel_order_reuses_injected_session_without_logout(monkeypatch) -> None:
+    fake = _FakeShioajiOrderApi()
+    fake._trades.append(_FakeTrade(order_id="ORD9"))
+    monkeypatch.setattr(
+        sj, "_login",
+        lambda cfg: (_ for _ in ()).throw(AssertionError("must not login when api is injected")),
+    )
+
+    result = sj.cancel_order(_shioaji_paper_cfg(), "ORD9", api=fake)
+
+    assert result["status"] == "ok"
+    assert fake.logged_out == 0
 
 
 def test_shioaji_cancel_order_success(monkeypatch) -> None:

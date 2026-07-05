@@ -1,9 +1,10 @@
 """Shioaji (SinoPac, 永豐金證券) connector via the official ``shioaji`` SDK.
 
 Wraps ``shioaji.Shioaji`` for the read operations the trading layer exposes
-(account / positions / orders / quote / history), plus futures order
-placement/cancellation gated to the ``paper`` (simulation) profile only --
-see ``place_order``/``cancel_order`` below.
+(account / positions / orders / quote / history), plus order placement and
+cancellation for TAIFEX futures (``*.TWF``, contract count) and TW equities
+(``*.TW``, whole 1,000-share board lots) -- see ``place_order``/
+``cancel_order`` below.
 
 Unlike Tiger's paper-vs-live split (two different account-number formats
 on the SAME connector), Shioaji has one account and a ``simulation``
@@ -12,14 +13,20 @@ market data is the same real feed in both modes (see PREPARE.md/MARKET_DATA.md
 in the bundled Shioaji skill). So ``profile`` here just toggles that
 boolean -- there is no account-format mismatch to guard against.
 
-Login uses ``api_key``/``secret_key`` only; no CA certificate is needed for
-any read operation, nor for simulation order placement (Shioaji skips CA
-signing automatically in simulation -- see ORDERS.md "Prerequisites" in the
-bundled Shioaji skill). Real-money order placement (``live-readonly`` ->
-some future ``live`` profile) needs CA activation, mandate-gate wiring, and
-a futures-aware ``InstrumentType``/``AssetClass`` in ``src/live/mandate``
-(none of that exists yet) -- ``place_order``/``cancel_order`` here
-deliberately refuse any non-simulation profile until that's built.
+Profiles and gating:
+
+* ``paper`` -- simulation. Orders work with ``api_key``/``secret_key`` only;
+  Shioaji skips CA signing automatically in simulation (ORDERS.md
+  "Prerequisites" in the bundled skill).
+* ``live-readonly`` -- production reads; never places orders by definition.
+* ``live`` -- production order placement. Triple-gated fail-closed: the
+  caller must pass ``allow_live=True`` explicitly AND the profile must be
+  ``live`` AND CA activation (``activate_ca`` with the config's
+  ``ca_path``/``ca_passwd``) must succeed at login. The consent/safety
+  layer around this lives in the deterministic deploy runtime
+  (``src/deploy``: per-deployment caps, kill switch, typed UI
+  confirmation), NOT in the LLM mandate framework (``src/live``) -- this
+  connector is deliberately not wired into that.
 """
 
 from __future__ import annotations
@@ -50,6 +57,7 @@ CONFIG_FILENAME = "shioaji.json"
 PROFILE_SIMULATION = {
     "paper": True,
     "live-readonly": False,
+    "live": False,
 }
 
 
@@ -68,14 +76,22 @@ class ShioajiConfig:
     Args:
         api_key: API key from https://www.sinotrade.com.tw/newweb/PythonAPIKey/.
         secret_key: Secret key issued alongside the API key.
-        profile: ``paper`` (simulation) or ``live-readonly`` (production, read-only).
+        profile: ``paper`` (simulation), ``live-readonly`` (production,
+            read-only), or ``live`` (production with CA-signed order
+            placement).
         timeout: Contract-load timeout in milliseconds.
+        ca_path: Path to the SinoPac CA certificate (``.pfx``). Required only
+            for the ``live`` profile -- simulation orders skip CA signing, and
+            ``live-readonly`` never places orders.
+        ca_passwd: Password for the CA certificate. Same scope as ``ca_path``.
     """
 
     api_key: str = ""
     secret_key: str = ""
     profile: str = "paper"
     timeout: int = 10000
+    ca_path: str = ""
+    ca_passwd: str = ""
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None = None) -> "ShioajiConfig":
@@ -83,12 +99,14 @@ class ShioajiConfig:
         payload = dict(data or {})
         profile = str(payload.get("profile") or "paper").strip().lower()
         if profile not in PROFILE_SIMULATION:
-            raise ShioajiConfigError("profile must be 'paper' or 'live-readonly'")
+            raise ShioajiConfigError("profile must be 'paper', 'live-readonly', or 'live'")
         return cls(
             api_key=str(payload.get("api_key") or "").strip(),
             secret_key=str(payload.get("secret_key") or "").strip(),
             profile=profile,
             timeout=int(payload.get("timeout") or 10000),
+            ca_path=str(payload.get("ca_path") or "").strip(),
+            ca_passwd=str(payload.get("ca_passwd") or ""),
         )
 
     def with_overrides(
@@ -335,18 +353,36 @@ def get_historical_bars(
 #: TAIFEX rejects MKT+ROD (op_code 9938) -- market orders must be IOC/FOK.
 _FUTURES_TIME_IN_FORCE = ("rod", "ioc", "fok")
 
-#: Returned by order methods when a non-simulation config reaches them.
-#: Shioaji exposes no runtime paper/live discriminator (same account, a
-#: ``simulation`` boolean picks the environment), so -- following the
-#: Longbridge/Dhan/Shoonya precedent -- the connector is structurally capped
-#: at paper until CA activation + mandate-gate wiring exists for a real live
-#: order path.
-_PAPER_ONLY_ERROR = (
-    "Shioaji connector is paper-only for order placement: it exposes no "
-    "runtime paper/live discriminator, and real-money orders need CA "
-    "activation + mandate-gate wiring that doesn't exist yet. Use the "
-    "'paper' (simulation) profile."
+#: TW equities trade in 1,000-share board lots; Shioaji's Common-lot
+#: ``StockOrder.quantity`` is denominated in LOTS, so share counts convert.
+_BOARD_LOT_SHARES = 1000
+
+_READONLY_PROFILE_ERROR = (
+    "the 'live-readonly' profile never places orders by definition. Use "
+    "'paper' (simulation) or 'live' (production, CA required)."
 )
+
+#: Live orders are triple-gated: the caller must pass ``allow_live=True``
+#: AND the config profile must be ``live`` AND CA activation must succeed
+#: at login. Any missing leg fails closed. This replaces the old blanket
+#: paper-only cap now that the deterministic deploy runtime provides the
+#: consent/safety layer (per-deployment caps, kill switch, typed UI
+#: confirmation) that the cap was waiting on.
+_LIVE_GATE_ERROR = (
+    "live order placement requires the caller to pass allow_live=True "
+    "explicitly (profile 'live' with activated CA). Refusing by default."
+)
+
+
+def _order_gate_error(cfg: ShioajiConfig, allow_live: bool) -> str | None:
+    """Return the refusal message for order placement, or ``None`` if allowed."""
+    if cfg.simulation:
+        return None
+    if cfg.profile != "live":
+        return _READONLY_PROFILE_ERROR
+    if not allow_live:
+        return _LIVE_GATE_ERROR
+    return None  # CA is the third leg: _login raises if activation fails.
 
 
 def place_order(
@@ -360,14 +396,20 @@ def place_order(
     limit_price: float | None = None,
     time_in_force: str = "rod",
     octype: str = "auto",
+    allow_live: bool = False,
+    api: Any = None,
 ) -> dict[str, Any]:
-    """Submit a TAIFEX futures order against the configured Shioaji account.
+    """Submit a TAIFEX futures or TW equity order on the configured account.
 
-    Simulation-only for now: refuses any profile where ``cfg.simulation`` is
-    ``False`` (i.e. ``live-readonly``), since real-money order placement
-    needs CA activation and mandate-gate wiring that doesn't exist yet (see
-    the module docstring). Only futures symbols (``*.TWF``) are supported --
-    TW equity order placement is a separate future extension.
+    Symbol suffix routes the market: ``*.TWF`` places a futures order
+    (contract count), ``*.TW`` places a whole-board-lot equity order
+    (``quantity`` in SHARES, must be a positive multiple of 1,000 -- odd
+    lots are not supported). Anything else is rejected.
+
+    Live gating is a triple check (see ``_order_gate_error``): the caller
+    must pass ``allow_live=True``, the profile must be ``live``, and CA
+    activation must have succeeded at login -- any missing leg fails closed.
+    ``paper`` (simulation) behaves exactly as before with no extra flags.
 
     ``order_status`` in the returned dict is whatever the exchange
     acknowledged synchronously when ``place_order`` returned -- commonly
@@ -379,49 +421,70 @@ def place_order(
 
     Args:
         config: Connector config; falls back to the saved config when ``None``.
-        symbol: Futures symbol, e.g. ``TXFR1.TWF``.
+        symbol: ``TXFR1.TWF`` (futures) or ``2330.TW`` (equity).
         side: ``buy`` or ``sell``.
-        quantity: Number of contracts (lots). Required -- Shioaji futures
-            orders are sized by contract count, not notional.
-        notional: Not supported for futures; passing this is an error.
+        quantity: Futures: contract count. Equity: share count (multiple of
+            1,000). Required either way -- sizing by notional is unsupported.
+        notional: Not supported; passing this is an error.
         order_type: ``market`` or ``limit``.
         limit_price: Required when ``order_type`` is ``limit``.
-        time_in_force: ``rod`` (rest-of-day), ``ioc``, or ``fok``. A
+        time_in_force: ``rod`` (rest-of-day), ``ioc``, or ``fok``. A futures
             ``market`` order must use ``ioc``/``fok`` -- TAIFEX rejects
-            market+rod.
-        octype: ``auto`` (default, recommended), ``new``, ``cover``, or
-            ``daytrade`` -- open/close type.
+            market+rod. TWSE accepts every combination, so market+rod is
+            fine for equities.
+        octype: Futures only: ``auto`` (default), ``new``, ``cover``, or
+            ``daytrade``. Equity orders must leave this as ``auto`` (it has
+            no stock meaning; anything else is rejected as a likely bug).
+        allow_live: Explicit opt-in for real-money placement. Defaults to
+            ``False`` so nothing places live by accident.
+        api: Optional already-logged-in Shioaji session to reuse (the deploy
+            runtime's persistent SessionManager passes this). When ``None``,
+            logs in fresh and logs out afterward, as before. A reused
+            session is NOT logged out here.
 
     Returns:
         On success ``{"status": "ok", "order_id", "symbol", "side", "profile",
         "simulation", "order_type", "time_in_force", "octype", "quantity",
-        "limit_price", "order_status", "filled_qty"}``. On invalid input,
-        submission failure, or a non-simulation profile, ``{"status":
-        "error", "error": <message>}`` -- fails closed, never raises for
-        caller-controlled mistakes.
+        "limit_price", "order_status", "filled_qty"}`` (futures) plus
+        ``"order_lots"`` for equities. On invalid input, submission failure,
+        or a gated profile, ``{"status": "error", "error": <message>}`` --
+        fails closed, never raises for caller-controlled mistakes.
     """
     cfg = config or load_config()
-    if not cfg.simulation:
-        return {"status": "error", "error": _PAPER_ONLY_ERROR}
+    gate_error = _order_gate_error(cfg, allow_live)
+    if gate_error:
+        return {"status": "error", "error": gate_error}
 
     clean_symbol = str(symbol or "").strip()
-    if not clean_symbol.upper().endswith(".TWF"):
-        return {"status": "error", "error": "only *.TWF futures symbols are supported"}
+    is_futures = clean_symbol.upper().endswith(".TWF")
+    is_equity = clean_symbol.upper().endswith(".TW") and not is_futures
+    if not is_futures and not is_equity:
+        return {"status": "error", "error": "symbol must end in .TWF (futures) or .TW (equity)"}
 
     side_token = str(side or "").strip().lower()
     if side_token not in ("buy", "sell"):
         return {"status": "error", "error": "side must be 'buy' or 'sell'"}
 
     if notional is not None:
-        return {"status": "error", "error": "notional is not supported for futures; provide quantity"}
+        return {"status": "error", "error": "notional is not supported; provide quantity"}
     if quantity is None:
         return {"status": "error", "error": "quantity is required"}
     try:
         qty_value = int(quantity)
     except (TypeError, ValueError):
-        return {"status": "error", "error": "quantity must be an integer contract count"}
+        unit = "share count" if is_equity else "contract count"
+        return {"status": "error", "error": f"quantity must be an integer {unit}"}
     if qty_value <= 0:
         return {"status": "error", "error": "quantity must be positive"}
+
+    lots_value: int | None = None
+    if is_equity:
+        if qty_value % _BOARD_LOT_SHARES != 0:
+            return {
+                "status": "error",
+                "error": f"equity quantity must be a multiple of {_BOARD_LOT_SHARES} shares (whole board lots; odd lots unsupported)",
+            }
+        lots_value = qty_value // _BOARD_LOT_SHARES
 
     type_token = str(order_type or "").strip().lower()
     if type_token not in ("market", "limit"):
@@ -430,11 +493,14 @@ def place_order(
     tif_token = str(time_in_force or "").strip().lower()
     if tif_token not in _FUTURES_TIME_IN_FORCE:
         return {"status": "error", "error": "time_in_force must be 'rod', 'ioc', or 'fok'"}
-    if type_token == "market" and tif_token == "rod":
+    if is_futures and type_token == "market" and tif_token == "rod":
         return {"status": "error", "error": "a market order must use time_in_force 'ioc' or 'fok' (TAIFEX rejects market+rod)"}
 
     octype_token = str(octype or "").strip().lower()
-    if octype_token not in ("auto", "new", "cover", "daytrade"):
+    if is_equity:
+        if octype_token != "auto":
+            return {"status": "error", "error": "octype is a futures concept; leave it as 'auto' for equity orders"}
+    elif octype_token not in ("auto", "new", "cover", "daytrade"):
         return {"status": "error", "error": "octype must be 'auto', 'new', 'cover', or 'daytrade'"}
 
     limit_value: float | None = None
@@ -449,30 +515,48 @@ def place_order(
             return {"status": "error", "error": "limit_price must be positive"}
 
     sj = _require_shioaji()
-    api = _login(cfg)
+    owns_session = api is None
+    if owns_session:
+        try:
+            api = _login(cfg)
+        except (ShioajiConfigError, ShioajiDependencyError) as exc:
+            return {"status": "error", "error": str(exc)}
     try:
         contract = _resolve_contract(api, clean_symbol)
         if contract is None:
             return {"status": "error", "error": f"no Shioaji contract for {clean_symbol}"}
 
-        account = _futopt_account(api)
-        if account is None:
-            return {"status": "error", "error": "no futures account signed in for this profile"}
-
-        order = sj.FuturesOrder(
-            price=limit_value if limit_value is not None else 0,
-            quantity=qty_value,
-            action=sj.Action.Buy if side_token == "buy" else sj.Action.Sell,
-            price_type=sj.FuturesPriceType.LMT if type_token == "limit" else sj.FuturesPriceType.MKT,
-            order_type={"rod": sj.OrderType.ROD, "ioc": sj.OrderType.IOC, "fok": sj.OrderType.FOK}[tif_token],
-            octype={
-                "auto": sj.FuturesOCType.Auto,
-                "new": sj.FuturesOCType.New,
-                "cover": sj.FuturesOCType.Cover,
-                "daytrade": sj.FuturesOCType.DayTrade,
-            }[octype_token],
-            account=account,
-        )
+        if is_futures:
+            account = _futopt_account(api)
+            if account is None:
+                return {"status": "error", "error": "no futures account signed in for this profile"}
+            order = sj.FuturesOrder(
+                price=limit_value if limit_value is not None else 0,
+                quantity=qty_value,
+                action=sj.Action.Buy if side_token == "buy" else sj.Action.Sell,
+                price_type=sj.FuturesPriceType.LMT if type_token == "limit" else sj.FuturesPriceType.MKT,
+                order_type={"rod": sj.OrderType.ROD, "ioc": sj.OrderType.IOC, "fok": sj.OrderType.FOK}[tif_token],
+                octype={
+                    "auto": sj.FuturesOCType.Auto,
+                    "new": sj.FuturesOCType.New,
+                    "cover": sj.FuturesOCType.Cover,
+                    "daytrade": sj.FuturesOCType.DayTrade,
+                }[octype_token],
+                account=account,
+            )
+        else:
+            account = getattr(api, "stock_account", None)
+            if account is None:
+                return {"status": "error", "error": "no stock account signed in for this profile"}
+            order = sj.StockOrder(
+                price=limit_value if limit_value is not None else 0,
+                quantity=lots_value,
+                action=sj.Action.Buy if side_token == "buy" else sj.Action.Sell,
+                price_type=sj.StockPriceType.LMT if type_token == "limit" else sj.StockPriceType.MKT,
+                order_type={"rod": sj.OrderType.ROD, "ioc": sj.OrderType.IOC, "fok": sj.OrderType.FOK}[tif_token],
+                order_lot=sj.StockOrderLot.Common,
+                account=account,
+            )
         with suppress_native_stdout():
             trade = api.place_order(contract, order)
             # Do NOT call api.update_status(trade=trade) here: confirmed live
@@ -488,10 +572,11 @@ def place_order(
     except Exception as exc:  # noqa: BLE001 - submission errors are reported, not raised
         return {"status": "error", "error": str(exc)}
     finally:
-        _logout_best_effort(api)
+        if owns_session:
+            _logout_best_effort(api)
 
     row = _trade_to_dict(trade)
-    return {
+    result = {
         "status": "ok",
         "order_id": row["order_id"],
         "symbol": clean_symbol,
@@ -506,6 +591,9 @@ def place_order(
         "order_status": row["status"],
         "filled_qty": _obj_get(_obj_get(trade, "status"), "deal_quantity"),
     }
+    if lots_value is not None:
+        result["order_lots"] = lots_value
+    return result
 
 
 def cancel_order(
@@ -513,39 +601,52 @@ def cancel_order(
     order_id: str = "",
     *,
     symbol: str | None = None,
+    allow_live: bool = False,
+    api: Any = None,
 ) -> dict[str, Any]:
-    """Cancel an open futures order on the configured Shioaji account.
+    """Cancel an open order (futures or equity) on the configured account.
 
-    Simulation-only, same guard as :func:`place_order`. Shioaji's
+    Same triple live gate as :func:`place_order`. Shioaji's
     ``cancel_order`` takes a live ``Trade`` object, not a bare id, so this
     looks the order up via ``list_trades()`` by ``trade.order.id`` first --
     synced from the server first via ``update_status`` since this connector
     logs in fresh per call (see ``_login``): confirmed live (2026-07-02)
     that a plain ``list_trades()`` in a brand-new session is empty even for
-    an order placed moments earlier in a different session/call.
+    an order placed moments earlier in a different session/call. (A reused
+    injected ``api`` session that placed the order itself already has it in
+    its trade cache; the sync is still safe.)
 
     Args:
         config: Connector config; falls back to the saved config when ``None``.
         order_id: The Shioaji ``trade.order.id`` to cancel.
         symbol: Optional symbol, echoed back for caller bookkeeping only;
             lookup is purely by ``order_id``.
+        allow_live: Explicit opt-in for real-money cancels, same as
+            :func:`place_order`.
+        api: Optional already-logged-in session to reuse (not logged out).
 
     Returns:
         On success ``{"status": "ok", "order_id", "symbol", "profile",
         "simulation", "cancelled"}``. On invalid input, an unmatched
-        ``order_id``, cancel failure, or a non-simulation profile,
+        ``order_id``, cancel failure, or a gated profile,
         ``{"status": "error", "error": <message>}`` -- fails closed, never
         raises.
     """
     cfg = config or load_config()
-    if not cfg.simulation:
-        return {"status": "error", "error": _PAPER_ONLY_ERROR}
+    gate_error = _order_gate_error(cfg, allow_live)
+    if gate_error:
+        return {"status": "error", "error": gate_error}
 
     clean_id = str(order_id or "").strip()
     if not clean_id:
         return {"status": "error", "error": "order_id is required"}
 
-    api = _login(cfg)
+    owns_session = api is None
+    if owns_session:
+        try:
+            api = _login(cfg)
+        except (ShioajiConfigError, ShioajiDependencyError) as exc:
+            return {"status": "error", "error": str(exc)}
     try:
         _sync_trade_status(api)
         trades = _safe_call(api, "list_trades") or []
@@ -557,7 +658,8 @@ def cancel_order(
     except Exception as exc:  # noqa: BLE001 - cancel errors are reported, not raised
         return {"status": "error", "error": str(exc)}
     finally:
-        _logout_best_effort(api)
+        if owns_session:
+            _logout_best_effort(api)
 
     return {
         "status": "ok",
@@ -613,6 +715,13 @@ def _login(cfg: ShioajiConfig):
     top-level connector call here logs in once, so that race does not apply,
     but a caller that wants to batch multiple reads should reuse a single
     ``_login()`` result rather than calling these functions in a tight loop.
+
+    For the ``live`` profile, CA activation runs immediately after login
+    (production order placement requires a CA-signed session -- see
+    ORDERS.md "Prerequisites" in the bundled Shioaji skill). A failed
+    activation logs back out and raises: a live session without a working
+    CA must never be handed to order-placing callers (fail-closed, no
+    silent downgrade to read-only-ish behavior).
     """
     missing = _missing_fields(cfg)
     if missing:
@@ -622,6 +731,18 @@ def _login(cfg: ShioajiConfig):
     with suppress_native_stdout():
         api = sj.Shioaji(simulation=cfg.simulation)
         api.login(api_key=cfg.api_key, secret_key=cfg.secret_key, contracts_timeout=cfg.timeout)
+    if cfg.profile == "live":
+        try:
+            with suppress_native_stdout():
+                activated = api.activate_ca(ca_path=cfg.ca_path, ca_passwd=cfg.ca_passwd)
+        except Exception as exc:
+            _logout_best_effort(api)
+            raise ShioajiConfigError(f"CA activation failed: {exc}") from exc
+        if not activated:
+            _logout_best_effort(api)
+            raise ShioajiConfigError(
+                "CA activation returned falsy -- check ca_path/ca_passwd in shioaji.json."
+            )
     return api
 
 
@@ -684,6 +805,11 @@ def _missing_fields(cfg: ShioajiConfig) -> list[str]:
         missing.append("api_key")
     if not cfg.secret_key:
         missing.append("secret_key")
+    if cfg.profile == "live":
+        if not cfg.ca_path:
+            missing.append("ca_path")
+        if not cfg.ca_passwd:
+            missing.append("ca_passwd")
     return missing
 
 
