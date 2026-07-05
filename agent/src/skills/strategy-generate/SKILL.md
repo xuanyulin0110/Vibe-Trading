@@ -50,9 +50,13 @@ class SignalEngine:
         """
         Args:
             data_map: code -> DataFrame (columns: open, high, low, close, volume, DatetimeIndex)
-                     If config.extra_fields is specified, pe, pb, roe, and similar daily_basic columns will also be present.
-                     If config.fundamental_fields is specified, PIT-safe statement columns such as
-                     income_total_revenue, income_n_income, and fina_indicator_roe will also be present.
+                     If config.extra_fields is specified (China A-shares only), pe, pb, roe, and similar
+                     daily_basic columns will also be present.
+                     If config.fundamental_fields is specified, PIT-safe statement/chip columns will also
+                     be present, prefixed by table name -- e.g. income_total_revenue, fina_indicator_roe
+                     for China A-shares, or institutional_foreign_net, fundamental_features_roe for
+                     Taiwan equities/futures (see "Market Detection and Data Sources" below for the
+                     full per-market table list).
         Returns:
             code -> signal Series, value range [-1.0, 1.0]
             1.0 = fully long, 0.5 = half position, 0.0 = flat, -1.0 = fully short
@@ -103,10 +107,37 @@ Self-check after writing `signal_engine.py`:
 | `^[A-Z]+\.US$` | US stocks | yfinance | - |
 | `^\d{3,5}\.HK$` | Hong Kong stocks | yfinance | - |
 | `^[A-Z]+-USDT$` | Cryptocurrency | okx | - |
+| `^\d{4,6}\.TW$` | Taiwan equities | finlab (primary) / shioaji | `fundamental_fields` only (see below); no `extra_fields` |
+| `^\w+\.TWF$` | Taiwan index futures (TXF/MXF/TMF) | shioaji_futures | `fundamental_fields` only, table `futures_institutional` |
 
-**`extra_fields` selection logic**: only China A-shares (`tushare`) support daily valuation fields. If the strategy needs `PE/PB/ROE` and similar daily_basic fields, specify them in `config.json.extra_fields` and `DataLoader` will retrieve them automatically. Hong Kong stocks, US stocks, and crypto do not support `extra_fields`.
+**`extra_fields` selection logic**: only China A-shares (`tushare`) support daily valuation fields. If the strategy needs `PE/PB/ROE` and similar daily_basic fields, specify them in `config.json.extra_fields` and `DataLoader` will retrieve them automatically. Hong Kong stocks, US stocks, crypto, and **Taiwan equities/futures do not support `extra_fields`** — always use `null` for these markets, even if the strategy wants ROE or similar fields (use `fundamental_fields` instead).
 
-**`fundamental_fields` selection logic**: use this for China A-share financial statement pre-filters. The runner queries `income`, `balancesheet`, `cashflow`, and/or `fina_indicator` through the Tushare fundamental provider, then merges rows into daily bars only after their announcement/disclosure date. Output columns are prefixed by table name, for example `income_total_revenue`, `income_n_income`, `balancesheet_total_hldr_eqy_exc_min_int`, and `fina_indicator_roe`.
+**`fundamental_fields` selection logic**: use this for financial-statement/chip-data pre-filters. Table names and the underlying provider are market-specific:
+
+- **China A-shares**: queries `income`, `balancesheet`, `cashflow`, and/or `fina_indicator` through the Tushare fundamental provider, merged into daily bars only after their announcement/disclosure date. Output columns: `income_total_revenue`, `income_n_income`, `balancesheet_total_hldr_eqy_exc_min_int`, `fina_indicator_roe`.
+- **Taiwan equities/futures**: routes to `FinlabFundamentalProvider` instead (`agent/backtest/loaders/finlab_fundamentals.py`) whenever any code in the backtest is a TW equity or `.TWF` future — no separate config needed to select it, `_detect_market()` does this automatically. Available tables (call `list_tables()`/`describe_table()` for the authoritative list, this may drift):
+
+  | table | fields |
+  |---|---|
+  | `institutional` (三大法人) | foreign_net, foreign_ex_dealer_net, trust_net, dealer_self_net, dealer_hedge_net |
+  | `margin` (融資融券) | margin_balance, margin_buy, margin_sell, margin_usage_rate, short_balance, short_buy, short_sell |
+  | `monthly_revenue` (月營收) | revenue, revenue_yoy_pct, revenue_mom_pct |
+  | `rotc_monthly_revenue` (興櫃月營收) | same as `monthly_revenue` |
+  | `financial_statement` (財報科目, quarter-indexed, PIT-resolved via disclosure-date table) | total_assets, total_liabilities, total_equity, revenue, gross_profit, operating_income, net_income, eps, operating_cash_flow |
+  | `fundamental_features` (財務比率, quarter-indexed, PIT-resolved) | roe, roa, gross_margin, operating_margin, net_margin, revenue_growth, current_ratio, debt_ratio, free_cash_flow |
+  | `foreign_shareholding` (外資持股) | shares_held, holding_pct, remaining_investable_pct |
+  | `director_shareholding` (董監持股不足, sparse) | director_insufficient_shares, supervisor_insufficient_shares |
+  | `futures_institutional` (期貨三大法人, TXF/MXF/TMF only) | foreign_net_oi, trust_net_oi, dealer_net_oi, foreign_net_volume, trust_net_volume, dealer_net_volume |
+
+  Output columns are prefixed by table name, e.g. `institutional_foreign_net`, `monthly_revenue_revenue_yoy_pct`, `fundamental_features_roe`. Example for a single-stock TW strategy:
+  ```json
+  "fundamental_fields": {
+    "institutional": ["foreign_net"],
+    "monthly_revenue": ["revenue_yoy_pct"],
+    "fundamental_features": ["roe"]
+  }
+  ```
+  `financial_statement`/`fundamental_features` are indexed by quarter (`'2025-Q1'`) internally, but the provider resolves each quarter to its real per-stock disclosure date before merging — TSMC's 2025-Q1 statement wasn't public until 2025-05-15, so a naive quarter-end merge would leak ~45 days of look-ahead; this is already handled, no extra work needed in `signal_engine.py`.
 
 ## `config.json` Format
 
@@ -134,8 +165,8 @@ Self-check after writing `signal_engine.py`:
 - `interval`: candlestick interval, default `"1D"`. Supported values: `"1m"` / `"5m"` / `"15m"` / `"30m"` / `"1H"` / `"4H"` / `"1D"`
   - The annualization factor for minute backtests is inferred automatically from `source` (252 trading days for China A-shares, 365 calendar days for crypto)
   - Minute backtests can be very data-heavy. Recommended limits are no more than 30 days for `1m`, or 1 year for `1H`
-- `extra_fields`: China A-shares can use values such as `["pe", "pb", "roe"]`; other markets should use `null`
-- `fundamental_fields`: optional China A-share statement fields, such as `{"income": ["total_revenue", "n_income"], "fina_indicator": ["roe"]}`; use `null` unless the strategy needs financial statement pre-filtering
+- `extra_fields`: China A-shares can use values such as `["pe", "pb", "roe"]`; other markets (including Taiwan) should use `null`
+- `fundamental_fields`: optional statement/chip pre-filter fields, table name -> field list. China A-shares: `{"income": ["total_revenue", "n_income"], "fina_indicator": ["roe"]}`. Taiwan equities/futures: `{"institutional": ["foreign_net"], "monthly_revenue": ["revenue_yoy_pct"], "fundamental_features": ["roe"]}` (see "Market Detection and Data Sources" for the full TW table list). `null` unless the strategy needs financial-statement/chip pre-filtering.
 - `optimizer`: optional, one of `"equal_volatility"` / `"risk_parity"` / `"mean_variance"` / `"max_diversification"` / `null` (equal-weight by default)
 - `optimizer_params`: optimizer parameters, such as `{"lookback": 60}`. `mean_variance` additionally supports `{"risk_free": 0.0}`
 - `engine`: backtest engine, default `"daily"`. For options strategies, set `"options"` (requires `OptionsSignalEngine`)
