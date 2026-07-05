@@ -349,6 +349,55 @@ class TestSymbolIsolation:
         )
 
 
+class TestZeroSizeRebalanceLogging:
+    """Regression test for a silent-failure mode found 2026-07-05.
+
+    A high-priced single stock (e.g. TSMC/2330.TW at NT$1,000+/share) traded
+    in whole 1,000-share board lots can hit a state where target notional
+    (weight * equity) rounds down to 0 lots -- not because the signal stopped
+    firing, but because a single lot's cost exceeds available equity. Once
+    that happens once, it can persist for the rest of the backtest as price
+    keeps rising (equity never grows because nothing trades), looking exactly
+    like the execution loop had silently stopped responding to a live,
+    still-changing signal. ``_rebalance`` returned early with no log line at
+    all when ``round_size`` produced 0, so from artifacts/metrics alone this
+    was indistinguishable from a genuine engine bug -- confirmed against a
+    real run (tsmc_kd_macd_ma_v2) and traced to this exact code path before
+    the warning logs below were added.
+    """
+
+    def test_size_rounds_to_zero_logs_a_warning_instead_of_silent_return(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from backtest.engines.tw_equity import TWEquityEngine
+
+        dates = pd.bdate_range("2025-01-01", periods=3)
+        # Price high enough that even 1 board lot (1,000 shares) costs more
+        # than the configured capital -- raw_size < 1,000 so round_size -> 0.
+        bar = pd.DataFrame(
+            {
+                "open": [1200.0] * 3,
+                "high": [1210.0] * 3,
+                "low": [1190.0] * 3,
+                "close": [1200.0] * 3,
+                "volume": [1000] * 3,
+            },
+            index=dates,
+        )
+        data_map = {"2330.TW": bar}
+        signal_map = {"2330.TW": pd.Series([0.0, 1.0, 1.0], index=dates)}
+
+        _, close_df, target_pos, _ = _align(data_map, signal_map, ["2330.TW"])
+
+        engine = TWEquityEngine({"initial_cash": 1_000_000})
+        with caplog.at_level("WARNING", logger="backtest.engines.base"):
+            engine._execute_bars(dates, data_map, close_df, target_pos, ["2330.TW"])
+
+        assert len(engine.trades) == 0, "1 lot at this price shouldn't be affordable"
+        assert any("rounds to 0" in r.message for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # 3. Config schema validation (pydantic)
 # ---------------------------------------------------------------------------

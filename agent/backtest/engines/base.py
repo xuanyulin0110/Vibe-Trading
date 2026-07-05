@@ -646,6 +646,13 @@ class BaseEngine(ABC):
             raw_size = self._calc_raw_size(symbol, target_notional, slipped)
             size = self.round_size(raw_size, slipped)
             if size <= 0:
+                logger.warning(
+                    "Skipped opening %s at %s: target size rounds to 0 (raw_size=%.4f, "
+                    "price=%.4f, target_notional=%.2f) -- lot-size rounding (e.g. TW's "
+                    "1,000-share board lot) means this weight/equity/price combination "
+                    "can't afford even 1 unit at this price.",
+                    symbol, ts, raw_size, slipped, target_notional,
+                )
                 return
 
             margin = self._calc_margin(symbol, size, slipped, leverage)
@@ -655,11 +662,22 @@ class BaseEngine(ABC):
             if margin + comm > self.capital:
                 available = self.capital - comm
                 if available <= 0:
+                    logger.warning(
+                        "Skipped opening %s at %s: no capital available after commission "
+                        "(capital=%.2f, commission=%.2f).",
+                        symbol, ts, self.capital, comm,
+                    )
                     return
                 size = self.round_size(
                     self._calc_raw_size(symbol, available * leverage, slipped), slipped,
                 )
                 if size <= 0:
+                    logger.warning(
+                        "Skipped opening %s at %s: reduced target size still rounds to 0 "
+                        "after the capital check (available=%.2f, price=%.4f) -- capital "
+                        "can't cover even 1 lot/unit at this price.",
+                        symbol, ts, available, slipped,
+                    )
                     return
                 margin = self._calc_margin(symbol, size, slipped, leverage)
                 comm = self.calc_commission(size, slipped, target_dir, is_open=True)
