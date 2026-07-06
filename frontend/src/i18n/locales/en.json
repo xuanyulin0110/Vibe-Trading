@@ -26,7 +26,8 @@
     "dark": "Dark",
     "language": "Language",
     "collapse": "Collapse",
-    "expand": "Expand"
+    "expand": "Expand",
+    "deployments": "Deployments"
   },
   "runtime": {
     "monitorBadge": "Runtime Monitor",

@@ -14,6 +14,7 @@ import {
   Fingerprint,
   List,
   Loader2,
+  Rocket,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
@@ -276,6 +277,13 @@ export function RunDetail() {
           ))}
 
           <div className="ml-auto flex gap-1">
+            <button
+              onClick={() => navigate(`/deployments?create=${encodeURIComponent(runId ?? "")}`)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-muted transition-colors"
+              title="部署此策略"
+            >
+              <Rocket className="h-3.5 w-3.5" /> 部署此策略
+            </button>
             {run.trade_log && run.trade_log.length > 0 && (
               <button
                 onClick={() => downloadCsv(`trades_${runId}.csv`, buildTradesCsv(run.trade_log!))}

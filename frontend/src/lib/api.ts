@@ -82,6 +82,73 @@ function appendQueryParam(url: string, key: string, value: string): string {
   return `${url}${sep}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
 }
 
+// --- Deterministic deployments (src/deploy) ---------------------------------
+
+export interface DeploymentItem {
+  id: string;
+  run_id: string;
+  symbol: string;
+  market: "tw_equity" | "tw_futures";
+  environment: "paper" | "live";
+  interval: string;
+  sessions: "day" | "day_night";
+  allocated_capital: number;
+  max_order_qty: number;
+  max_daily_orders: number;
+  max_order_notional: number;
+  enabled: boolean;
+  created_at: string;
+  last_tick_at?: string | null;
+  last_tick_status?: string | null;
+  last_error?: string | null;
+  paused_reason?: string | null;
+}
+
+export interface DeploymentListResponse {
+  deployments: DeploymentItem[];
+  kill_switch: boolean;
+  sessions: Record<string, { connected: boolean; failed?: string | null }>;
+}
+
+export interface CreateDeploymentBody {
+  run_id: string;
+  environment: "paper" | "live";
+  symbol?: string;
+  sessions?: "day" | "day_night";
+  allocated_capital: number;
+  max_order_qty: number;
+  max_daily_orders: number;
+  max_order_notional: number;
+  confirm_symbol?: string;
+}
+
+export interface DeploymentTickRecord {
+  phase?: string;
+  status?: string;
+  bar_ts?: string;
+  signal_weight?: number;
+  signal_close?: number;
+  target_qty?: number;
+  current_qty?: number;
+  delta?: number;
+  sizing_reason?: string;
+  note?: string;
+  orders?: Array<Record<string, unknown>>;
+  elapsed_seconds?: number;
+  executed_at?: string;
+  kind?: string;
+}
+
+export interface DeploymentHistory {
+  ticks: DeploymentTickRecord[];
+  fills: Array<Record<string, unknown>>;
+}
+
+export interface DeploymentEquityResponse {
+  allocated_capital: number;
+  points: Array<{ ts: string; equity: number; realized_pnl?: number; unrealized_pnl?: number }>;
+}
+
 export const api = {
   uploadFile,
   listRuns: (limit?: number) => request<RunListItem[]>(`/runs${limit ? `?limit=${encodeURIComponent(String(limit))}` : ""}`),
@@ -127,6 +194,38 @@ export const api = {
     if (options?.replay) url = appendQueryParam(url, "replay", options.replay);
     return url;
   },
+
+  // Deterministic deployments (src/deploy)
+  listDeployments: () => request<DeploymentListResponse>("/deployments"),
+  createDeployment: (body: CreateDeploymentBody) =>
+    request<DeploymentItem>("/deployments", { method: "POST", body: JSON.stringify(body) }),
+  startDeployment: (id: string) =>
+    request<{ id: string; enabled: boolean }>(`/deployments/${id}/start`, { method: "POST" }),
+  stopDeployment: (id: string) =>
+    request<{ id: string; enabled: boolean }>(`/deployments/${id}/stop`, { method: "POST" }),
+  deleteDeployment: (id: string) =>
+    request<{ status: string }>(`/deployments/${id}`, { method: "DELETE" }),
+  flattenDeployment: (id: string, confirmSymbol: string) =>
+    request<{ status: string; orders: Array<Record<string, unknown>> }>(
+      `/deployments/${id}/flatten`,
+      { method: "POST", body: JSON.stringify({ confirm_symbol: confirmSymbol }) },
+    ),
+  runDeploymentOnce: (id: string, dryRun = true) =>
+    request<DeploymentTickRecord>(`/deployments/${id}/run-once?dry_run=${dryRun}`, { method: "POST" }),
+  getDeployment: (id: string) => request<DeploymentItem>(`/deployments/${id}`),
+  getDeploymentHistory: (id: string, limit = 100) =>
+    request<DeploymentHistory>(`/deployments/${id}/history?limit=${limit}`),
+  getDeploymentEquity: (id: string) => request<DeploymentEquityResponse>(`/deployments/${id}/equity`),
+  getDeploymentBars: (id: string, lookbackDays = 30) =>
+    request<{ symbol: string; interval: string; bars: PriceBar[] }>(
+      `/deployments/${id}/bars?lookback_days=${lookbackDays}`,
+    ),
+  setDeployKillSwitch: (engaged: boolean) =>
+    request<{ engaged: boolean }>("/deployments/kill-switch", {
+      method: "POST",
+      body: JSON.stringify({ engaged }),
+    }),
+  deploymentEventsUrl: () => withAuthQuery(`${BASE}/deployments/events`),
 
   // Swarm API
   listSwarmPresets: () => request<SwarmPreset[]>("/swarm/presets"),

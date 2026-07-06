@@ -21,7 +21,8 @@
     "dark": "داكن",
     "language": "اللغة",
     "collapse": "طي",
-    "expand": "توسيع"
+    "expand": "توسيع",
+    "deployments": "النشر الحي"
   },
   "runtime": {
     "monitorBadge": "مراقب وقت التشغيل",

@@ -25,6 +25,12 @@ const Correlation = lazy(() =>
 const AlphaZoo = lazy(() =>
   import("@/pages/AlphaZoo").then((m) => ({ default: m.AlphaZoo })),
 );
+const Deployments = lazy(() =>
+  import("@/pages/Deployments").then((m) => ({ default: m.Deployments })),
+);
+const DeploymentDetail = lazy(() =>
+  import("@/pages/DeploymentDetail").then((m) => ({ default: m.DeploymentDetail })),
+);
 
 function PageLoader() {
   return (
@@ -52,6 +58,8 @@ export const router = createBrowserRouter([
       { path: "/reports", element: wrap(Reports) },
       { path: "/settings", element: wrap(Settings) },
       { path: "/runs/:runId", element: wrap(RunDetail) },
+      { path: "/deployments", element: wrap(Deployments) },
+      { path: "/deployments/:deploymentId", element: wrap(DeploymentDetail) },
       { path: "/compare", element: wrap(Compare) },
       { path: "/correlation", element: wrap(Correlation) },
       { path: "/alpha-zoo", element: wrap(AlphaZoo) },

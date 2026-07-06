@@ -21,7 +21,8 @@
     "dark": "ダーク",
     "language": "言語",
     "collapse": "折りたたむ",
-    "expand": "展開"
+    "expand": "展開",
+    "deployments": "実運用デプロイ"
   },
   "runtime": {
     "monitorBadge": "ランタイムモニター",
