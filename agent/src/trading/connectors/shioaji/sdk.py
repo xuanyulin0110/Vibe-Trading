@@ -245,10 +245,16 @@ def get_account_snapshot(config: ShioajiConfig | None = None) -> dict[str, Any]:
     return result
 
 
-def get_positions(config: ShioajiConfig | None = None) -> dict[str, Any]:
-    """Fetch current stock positions for the configured profile."""
+def get_positions(config: ShioajiConfig | None = None, *, api: Any = None) -> dict[str, Any]:
+    """Fetch current positions for the configured profile.
+
+    ``api``: optional already-logged-in session to reuse (not logged out) --
+    the deploy runtime's persistent SessionManager passes this.
+    """
     cfg = config or load_config()
-    api = _login(cfg)
+    owns_session = api is None
+    if owns_session:
+        api = _login(cfg)
     positions = _safe_call(api, "list_positions") or []
     result = {
         "status": "ok",
@@ -256,16 +262,22 @@ def get_positions(config: ShioajiConfig | None = None) -> dict[str, Any]:
         "simulation": cfg.simulation,
         "positions": [_position_to_dict(item) for item in positions],
     }
-    _logout_best_effort(api)
+    if owns_session:
+        _logout_best_effort(api)
     return result
 
 
 def get_open_orders(
-    config: ShioajiConfig | None = None, *, include_executions: bool = False,
+    config: ShioajiConfig | None = None, *, include_executions: bool = False, api: Any = None,
 ) -> dict[str, Any]:
-    """Fetch recent trades/orders for the configured profile."""
+    """Fetch recent trades/orders for the configured profile.
+
+    ``api``: optional already-logged-in session to reuse (not logged out).
+    """
     cfg = config or load_config()
-    api = _login(cfg)
+    owns_session = api is None
+    if owns_session:
+        api = _login(cfg)
     _sync_trade_status(api)
     trades = _safe_call(api, "list_trades") or []
     rows = [_trade_to_dict(item) for item in trades]
@@ -277,25 +289,31 @@ def get_open_orders(
     }
     if include_executions:
         result["executions"] = [r for r in rows if r["status"] == "Filled"]
-    _logout_best_effort(api)
+    if owns_session:
+        _logout_best_effort(api)
     return result
 
 
-def get_quote(symbol: str, *, config: ShioajiConfig | None = None, **_: Any) -> dict[str, Any]:
+def get_quote(symbol: str, *, config: ShioajiConfig | None = None, api: Any = None, **_: Any) -> dict[str, Any]:
     """Fetch a real-time top-of-book snapshot for ``symbol``.
 
     Accepts TW equities (``2330.TW``) and TAIFEX index futures
     (``TXFR1.TWF``); routing is by suffix (see ``_resolve_contract``).
+    ``api``: optional already-logged-in session to reuse (not logged out).
     """
     cfg = config or load_config()
-    api = _login(cfg)
+    owns_session = api is None
+    if owns_session:
+        api = _login(cfg)
     contract = _resolve_contract(api, symbol)
     if contract is None:
-        _logout_best_effort(api)
+        if owns_session:
+            _logout_best_effort(api)
         return {"status": "error", "error": f"no Shioaji contract for {symbol}"}
 
     snapshots = _safe_call(api, "snapshots", [contract]) or []
-    _logout_best_effort(api)
+    if owns_session:
+        _logout_best_effort(api)
     if not snapshots:
         return {"status": "error", "error": f"no snapshot returned for {symbol}"}
     return {"status": "ok", "symbol": symbol, "quote": _snapshot_to_dict(snapshots[0])}
