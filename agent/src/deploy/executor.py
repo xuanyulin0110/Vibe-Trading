@@ -24,6 +24,9 @@ from src.trading.connectors.shioaji import sdk
 _MAX_REFILLS = 2
 #: Price-limit guard mirrors the backtest engines' ±10% can_execute rule.
 _PRICE_LIMIT = 0.10
+#: ROD fill patience: poll until filled (or this budget), then cancel the rest.
+_ROD_FILL_WAIT_SECONDS = 30
+_ROD_POLL_SECONDS = 3
 
 
 @dataclass
@@ -51,7 +54,11 @@ def current_position_qty(positions: list[dict[str, Any]], deployment: Deployment
         for pos in positions:
             code = str(pos.get("symbol") or pos.get("code") or "")
             if code.split(".")[0] == stock_id:
-                total += _signed_qty(pos)
+                # Shioaji common-lot equity positions are denominated in
+                # LOTS (張) -- confirmed live 2026-07-06: a 2,000-share fill
+                # reports quantity=2. Deploy-internal equity quantities are
+                # SHARES throughout, so convert at this boundary.
+                total += _signed_qty(pos) * 1000
         return total
     product = contracts.product_of(deployment.symbol)
     for pos in positions:
@@ -357,11 +364,19 @@ def _place_with_refills(
                 if filled == 0:
                     break
             else:
-                # ROD: give the market a moment, then cancel any remainder --
-                # no resting orders may survive a tick.
-                time.sleep(2)
-                open_orders = (sdk.get_open_orders(None, api=api) or {}).get("open_orders", [])
-                resting = [o for o in open_orders if _order_matches(deployment, o)]
+                # ROD: wait for the fill with bounded patience, THEN cancel
+                # any remainder -- no resting orders may survive a tick, but
+                # a market order needs real seconds to ack+fill (confirmed
+                # live 2026-07-06 on the simulation feed: a 2s wait cancelled
+                # a perfectly good PendingSubmit order before it could fill).
+                deadline = time.monotonic() + _ROD_FILL_WAIT_SECONDS
+                resting: list[dict[str, Any]] = []
+                while time.monotonic() < deadline:
+                    time.sleep(_ROD_POLL_SECONDS)
+                    open_orders = (sdk.get_open_orders(None, api=api) or {}).get("open_orders", [])
+                    resting = [o for o in open_orders if _order_matches(deployment, o)]
+                    if not resting:
+                        break
                 for o in resting:
                     cancel = sdk.cancel_order(
                         None, str(o.get("order_id") or ""), allow_live=allow_live, api=api,

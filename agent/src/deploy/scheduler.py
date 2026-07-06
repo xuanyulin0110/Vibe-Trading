@@ -129,6 +129,14 @@ class DeployScheduler:
                 if owns:
                     run_dir = safe_run_id(dep.run_id)
                     payload["state"] = str(stat)
+                    if dep.market != TW_FUTURES and payload.get("quantity") is not None:
+                        # Common-lot stock deal events report quantity in
+                        # LOTS (張); deploy-internal equity units are shares.
+                        try:
+                            payload["quantity_lots"] = float(payload["quantity"])
+                            payload["quantity"] = float(payload["quantity"]) * 1000
+                        except (TypeError, ValueError):
+                            pass
                     if accounting.append_fill(run_dir, payload):
                         self._publish({"type": "fill", "deployment_id": dep.id, "fill": payload})
                     break

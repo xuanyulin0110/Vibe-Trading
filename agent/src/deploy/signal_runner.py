@@ -45,8 +45,7 @@ import pandas as pd
 
 from backtest.engines.base import _maybe_enrich_fundamentals
 from backtest.loaders._shioaji_kbars import normalize_interval
-from backtest.loaders.registry import LOADER_REGISTRY
-from backtest.runner import _load_module_from_file, _validate_signal_engine_class
+from backtest.runner import _get_loader, _load_module_from_file, _validate_signal_engine_class
 
 from src.deploy.market_calendar import TAIPEI, TW_EQUITY, day_session_close
 
@@ -137,9 +136,13 @@ def fetch_run_data(
         from backtest.runner import _detect_source
 
         source = _detect_source(codes[0])
-    loader_cls = LOADER_REGISTRY.get(source)
-    if loader_cls is None:
-        raise SignalComputationError(f"unknown loader source {source!r}")
+    try:
+        # _get_loader (not a bare registry lookup): loader classes register
+        # themselves at module import, and backtest.runner's accessor is what
+        # triggers those imports.
+        loader_cls = _get_loader(source)
+    except Exception as exc:  # noqa: BLE001 - registry raises various lookup errors
+        raise SignalComputationError(f"unknown loader source {source!r}: {exc}") from exc
     loader = loader_cls()
     if injected_api is not None and hasattr(loader, "api"):
         loader.api = injected_api

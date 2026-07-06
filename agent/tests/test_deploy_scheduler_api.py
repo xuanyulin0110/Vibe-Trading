@@ -190,6 +190,30 @@ class TestDeploymentRoutes:
         assert r.status_code == 200
         assert stub.ran == [(dep_id, True)]
 
+    def test_events_route_not_shadowed_by_id_route(self) -> None:
+        """Regression (2026-07-06): /deployments/events 404'd because the
+        {deployment_id} catch-all was registered first and swallowed
+        "events" as an id -- the events router must be included first.
+
+        Asserted on route ORDER (matching is first-registered-wins) rather
+        than by streaming the endpoint: the SSE generator is infinite and
+        TestClient blocks on it. FastAPI's lazy include keeps included
+        routers as _IncludedRouter entries wrapping original_router, so
+        flatten those to recover path order.
+        """
+        import api_server
+
+        paths: list[str] = []
+        for route in api_server.app.router.routes:
+            inner = getattr(route, "original_router", None)
+            if inner is not None:
+                paths.extend(getattr(r, "path", "") for r in inner.routes)
+            else:
+                paths.append(getattr(route, "path", ""))
+        events_idx = paths.index("/deployments/events")
+        id_idx = paths.index("/deployments/{deployment_id}")
+        assert events_idx < id_idx
+
     def test_history_and_equity_empty_ok(self, client) -> None:
         http, _ = client
         dep_id = http.post("/deployments", json=_create_body()).json()["id"]

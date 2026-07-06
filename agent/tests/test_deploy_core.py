@@ -455,6 +455,29 @@ class TestExecutor:
         assert outcome.status == "ok"
         assert calls["orders"] == []
 
+    def test_equity_position_lots_convert_to_shares(self, exec_env) -> None:
+        """Shioaji equity positions are in LOTS (confirmed live 2026-07-06):
+        holding quantity=2 means 2,000 shares -- a 2,000-share target must
+        read as converged, not as a 1,998-share odd-lot diff."""
+        run_dir, calls = exec_env
+        calls["positions"] = [{"symbol": "2330", "quantity": 2, "direction": 1}]
+        dep = _deployment(
+            symbol="2330.TW", market="tw_equity", allocated_capital=5_000_000.0,
+            max_order_qty=2000, max_order_notional=6_000_000.0,
+        )
+        sig = signal_runner.SignalResult(
+            symbol="2330.TW", bar_ts=pd.Timestamp("2026-07-03"),
+            weight=1.0, close=2450.0, bars_evaluated=100, elapsed_seconds=0.1,
+        )
+        outcome = executor.run_tick(
+            dep, run_dir, session_api=object(), signal_result=sig,
+            quote_fn=lambda a, s: {},
+            now=dt.datetime(2026, 7, 6, 9, 5, tzinfo=TAIPEI),
+        )
+        assert outcome.status == "ok"
+        assert outcome.current_qty == 2000
+        assert calls["orders"] == []  # converged
+
     def test_bar_idempotency(self, exec_env) -> None:
         run_dir, calls = exec_env
         args = dict(session_api=_FakeApiTMF(), signal_result=_signal(1.0),

@@ -769,8 +769,10 @@ def _auth_credential_from_header_or_query(
 from src.deploy.api import events_router as _deploy_events_router  # noqa: E402
 from src.deploy.api import router as _deploy_router  # noqa: E402
 
-app.include_router(_deploy_router, dependencies=[Depends(require_auth)])
+# events_router FIRST: /deployments/events must win over the main router's
+# /deployments/{deployment_id} catch-all (routes match in registration order).
 app.include_router(_deploy_events_router, dependencies=[Depends(require_event_stream_auth)])
+app.include_router(_deploy_router, dependencies=[Depends(require_auth)])
 
 
 def _is_loopback_origin(origin: str) -> bool:
@@ -3710,7 +3712,9 @@ def serve_main(argv: list[str] | None = None) -> int:
         print("[dev] Frontend: http://localhost:5173")
         print(f"[dev] API: http://localhost:{args.port}")
     elif frontend_dist.exists():
-        if not any(route.path == "/" for route in app.routes):
+        # getattr: FastAPI's lazy include_router() inserts _IncludedRouter
+        # entries into app.routes that have no .path attribute.
+        if not any(getattr(route, "path", None) == "/" for route in app.routes):
             app.mount("/", SPAStaticFiles(directory=str(frontend_dist), html=True), name="frontend")
         print(f"[prod] Frontend served from {frontend_dist}")
     else:
