@@ -653,6 +653,7 @@ async def _run_startup_preflight() -> None:
 
     run_preflight(console)
     _start_scheduled_research_executor()
+    _start_deploy_scheduler()
     if os.getenv("VIBE_TRADING_CHANNELS_AUTO_START", "").strip().lower() in {"1", "true", "yes"}:
         await _start_channel_runtime()
 
@@ -662,6 +663,39 @@ async def _stop_scheduled_research_on_shutdown() -> None:
     """Stop the scheduled research executor on server shutdown."""
     await _stop_channel_runtime()
     await _stop_scheduled_research_executor()
+    await _stop_deploy_scheduler()
+
+
+_deploy_scheduler = None
+
+
+def _start_deploy_scheduler() -> None:
+    """Boot the deterministic deployment scheduler (src/deploy).
+
+    Isolated from the LLM live framework: this schedules signal_engine-driven
+    ticks only. Failures here must never block API startup.
+    """
+    global _deploy_scheduler
+    try:
+        from src.deploy.api import event_bus, set_scheduler
+        from src.deploy.scheduler import DeployScheduler
+
+        event_bus.bind_loop()
+        _deploy_scheduler = DeployScheduler(publish=event_bus.publish)
+        _deploy_scheduler.start()
+        set_scheduler(_deploy_scheduler)
+    except Exception:  # noqa: BLE001 - deploy runtime is optional at boot
+        logger.exception("deploy scheduler failed to start")
+
+
+async def _stop_deploy_scheduler() -> None:
+    global _deploy_scheduler
+    if _deploy_scheduler is not None:
+        try:
+            await _deploy_scheduler.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("deploy scheduler shutdown failed")
+        _deploy_scheduler = None
 
 
 # ============================================================================
@@ -727,6 +761,16 @@ def _auth_credential_from_header_or_query(
     if allow_query and query_api_key:
         return query_api_key
     return ""
+
+
+# --- Deterministic deployment runtime routes (src/deploy) -------------------
+# JSON control routes take normal Bearer auth; the SSE stream takes the
+# EventSource-compatible query auth, same split as /sessions/{id}/events.
+from src.deploy.api import events_router as _deploy_events_router  # noqa: E402
+from src.deploy.api import router as _deploy_router  # noqa: E402
+
+app.include_router(_deploy_router, dependencies=[Depends(require_auth)])
+app.include_router(_deploy_events_router, dependencies=[Depends(require_event_stream_auth)])
 
 
 def _is_loopback_origin(origin: str) -> bool:
