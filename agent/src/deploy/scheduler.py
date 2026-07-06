@@ -231,9 +231,11 @@ class DeployScheduler:
             self._publish({
                 "type": "tick",
                 "deployment_id": dep.id,
+                "symbol": dep.symbol,
                 "status": outcome.status,
                 "reason": outcome.reason,
                 "bar_ts": outcome.bar_ts,
+                "orders": len(outcome.orders or []),
                 "elapsed_seconds": outcome.elapsed_seconds,
             })
         except SessionUnavailableError as exc:

@@ -191,8 +191,12 @@ def create_deployment(body: CreateDeploymentRequest) -> dict[str, Any]:
 
 @router.post("/kill-switch")
 def kill_switch(body: KillSwitchRequest) -> dict[str, Any]:
+    from src.deploy import notifier
+
     store.set_kill_switch(body.engaged)
-    event_bus.publish({"type": "kill_switch", "engaged": body.engaged})
+    event = {"type": "kill_switch", "engaged": body.engaged}
+    event_bus.publish(event)
+    notifier.publish(event)
     return {"engaged": store.kill_switch_engaged()}
 
 

@@ -119,6 +119,26 @@ class ChannelRuntime:
                 )
                 return
 
+            # /deploy commands are deterministic runtime controls (fork
+            # feature, src/deploy) -- handled directly, never routed to the
+            # LLM session like ordinary chat.
+            from src.deploy.chat_commands import handle_deploy_command, is_deploy_command
+
+            if is_deploy_command(msg.content):
+                reply, buttons = await asyncio.to_thread(
+                    handle_deploy_command, msg.channel, msg.sender_id, msg.chat_id, msg.content,
+                )
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=reply,
+                        buttons=buttons,
+                        metadata={"_deploy_command": True},
+                    )
+                )
+                return
+
             session_id = self._session_for(msg)
             result = await self.session_service.send_message(
                 session_id,

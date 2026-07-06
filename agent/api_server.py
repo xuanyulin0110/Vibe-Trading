@@ -677,11 +677,18 @@ def _start_deploy_scheduler() -> None:
     """
     global _deploy_scheduler
     try:
+        from src.deploy import notifier as deploy_notifier
         from src.deploy.api import event_bus, set_scheduler
         from src.deploy.scheduler import DeployScheduler
 
         event_bus.bind_loop()
-        _deploy_scheduler = DeployScheduler(publish=event_bus.publish)
+        deploy_notifier.bind_loop()
+
+        def _fanout(event: dict) -> None:
+            event_bus.publish(event)  # SSE for the web UI
+            deploy_notifier.publish(event)  # IM push (Telegram etc.)
+
+        _deploy_scheduler = DeployScheduler(publish=_fanout)
         _deploy_scheduler.start()
         set_scheduler(_deploy_scheduler)
     except Exception:  # noqa: BLE001 - deploy runtime is optional at boot
