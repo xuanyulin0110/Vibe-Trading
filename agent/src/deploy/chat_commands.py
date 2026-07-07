@@ -28,6 +28,7 @@ COMMAND_PREFIX = "/deploy"
 
 HELP_TEXT = """可用指令：
 /deploy status — 所有部署狀態
+/deploy pos — 券商實際倉位查詢（模擬/正式）
 /deploy start <代號> — 啟動部署
 /deploy stop <代號> — 停止部署
 /deploy dryrun <代號> — 試算下一個 tick（不下單）
@@ -93,6 +94,8 @@ def handle_deploy_command(
             return HELP_TEXT, []
         if sub == "status":
             return _cmd_status(channel, chat_id)
+        if sub in ("pos", "positions", "倉位"):
+            return _cmd_positions()
         if sub in ("start", "stop"):
             return _cmd_toggle(sub, args)
         if sub == "dryrun":
@@ -141,6 +144,65 @@ def _cmd_status(channel: str, chat_id: str) -> tuple[str, list[list[str]]]:
         [f"{COMMAND_PREFIX} resume" if store.kill_switch_engaged() else f"{COMMAND_PREFIX} kill"]
     )
     return "\n".join(lines), buttons
+
+
+def _cmd_positions() -> tuple[str, list[list[str]]]:
+    """Live broker positions, per environment, with deployment attribution."""
+    from src.deploy import contracts
+    from src.trading.connectors.shioaji import sdk
+
+    scheduler = _scheduler()
+    if scheduler is None:
+        return "排程器未運行，無法查詢倉位。", []
+
+    deployments = store.list_deployments()
+    environments = sorted({d.environment for d in deployments}) or ["paper"]
+    lines: list[str] = []
+    for env in environments:
+        header = "【模擬倉】" if env == "paper" else "【正式環境】"
+        try:
+            with scheduler.sessions.use(env) as api:
+                payload = sdk.get_positions(None, api=api)
+        except Exception as exc:  # noqa: BLE001 - report, don't die
+            lines.append(f"{header} 查詢失敗：{exc}")
+            continue
+        positions = list(payload.get("positions") or [])
+        if not positions:
+            lines.append(f"{header} 無持倉")
+            continue
+        lines.append(header)
+        env_symbols = {d.symbol for d in deployments if d.environment == env}
+        env_products = {
+            contracts.product_of(d.symbol)
+            for d in deployments
+            if d.environment == env and d.market == TW_FUTURES
+        }
+        for pos in positions:
+            code = str(pos.get("code") or "")
+            qty = pos.get("quantity")
+            direction = str(pos.get("direction") or "")
+            side = "多" if "buy" in direction.lower() or direction in ("1", "Action.Buy") else (
+                "空" if "sell" in direction.lower() else direction or "?"
+            )
+            is_futures_code = contracts.product_of(code) in env_products
+            unit = "口" if is_futures_code else "張"
+            owned = (
+                is_futures_code
+                or f"{code}.TW" in env_symbols
+                or code in env_symbols
+            )
+            tag = "" if owned else "（非部署部位）"
+            entry = pos.get("price")
+            last = pos.get("last_price")
+            pnl = pos.get("pnl")
+            line = f"  {code} {side} {qty}{unit} 均價{entry} 現價{last}"
+            if pnl is not None:
+                try:
+                    line += f" 未實現{float(pnl):+,.0f}"
+                except (TypeError, ValueError):
+                    line += f" 未實現{pnl}"
+            lines.append(line + tag)
+    return "\n".join(lines), []
 
 
 def _cmd_toggle(sub: str, args: list[str]) -> tuple[str, list[list[str]]]:

@@ -127,6 +127,61 @@ class TestDeployChatCommands:
         reply, _ = _run("/deploy bogus")
         assert "/deploy status" in reply
 
+    def test_positions_query(self, tmp_stores, approved, monkeypatch) -> None:
+        """`/deploy pos` shows live broker positions with deployment attribution."""
+        import contextlib
+
+        from src.deploy import api as deploy_api
+
+        _mk_deployment()  # TXFR1.TWF paper futures deployment
+
+        class _Sessions:
+            @contextlib.contextmanager
+            def use(self, env):
+                yield object()
+
+        class _PosScheduler(_StubScheduler):
+            sessions = _Sessions()
+
+        monkeypatch.setattr(deploy_api, "_scheduler", _PosScheduler())
+        monkeypatch.setattr(
+            "src.trading.connectors.shioaji.sdk.get_positions",
+            lambda cfg=None, api=None: {
+                "status": "ok",
+                "positions": [
+                    {"code": "TXF202607", "direction": "Action.Buy", "quantity": 2,
+                     "price": 23000.0, "last_price": 23100.0, "pnl": 40000.0},
+                    {"code": "2603", "direction": "Action.Buy", "quantity": 1,
+                     "price": 150.0, "last_price": 151.0, "pnl": 1000.0},
+                ],
+            },
+        )
+        reply, _ = _run("/deploy pos")
+        assert "TXF202607 多 2口" in reply
+        assert "+40,000" in reply
+        assert "（非部署部位）" in reply  # 2603 isn't any deployment's symbol
+
+    def test_positions_empty(self, tmp_stores, approved, monkeypatch) -> None:
+        import contextlib
+
+        from src.deploy import api as deploy_api
+
+        class _Sessions:
+            @contextlib.contextmanager
+            def use(self, env):
+                yield object()
+
+        class _PosScheduler(_StubScheduler):
+            sessions = _Sessions()
+
+        monkeypatch.setattr(deploy_api, "_scheduler", _PosScheduler())
+        monkeypatch.setattr(
+            "src.trading.connectors.shioaji.sdk.get_positions",
+            lambda cfg=None, api=None: {"status": "ok", "positions": []},
+        )
+        reply, _ = _run("/deploy pos")
+        assert "無持倉" in reply
+
 
 class TestNotifier:
     def test_subscription_roundtrip(self, tmp_stores) -> None:
