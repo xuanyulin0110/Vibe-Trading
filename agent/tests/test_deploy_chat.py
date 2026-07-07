@@ -280,3 +280,36 @@ class TestRuntimeInterception:
         out = asyncio.new_event_loop().run_until_complete(_exercise())
         assert out.metadata.get("_deploy_command") is True
         assert "部署" in out.content
+
+
+class TestTelegramEnvToken:
+    """TELEGRAM_BOT_TOKEN in agent/.env configures the channel without agent.json."""
+
+    def test_env_token_enables_telegram(self, monkeypatch, tmp_path) -> None:
+        from src.channels import config as channels_config
+
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+        data = channels_config._apply_env_overrides({})
+        assert data["telegram"]["token"] == "123:abc"
+        assert data["telegram"]["enabled"] is True
+        assert data["telegram"]["inline_keyboards"] is True
+
+    def test_env_token_respects_explicit_file_disable(self, monkeypatch) -> None:
+        from src.channels import config as channels_config
+
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+        file_config = {"telegram": {"enabled": False, "token": "file-token", "inline_keyboards": False}}
+        data = channels_config._apply_env_overrides(file_config)
+        # env token wins for the secret, but the operator's explicit
+        # enabled=false on a token-carrying config is honored.
+        assert data["telegram"]["token"] == "123:abc"
+        assert data["telegram"]["enabled"] is False
+        assert data["telegram"]["inline_keyboards"] is False
+
+    def test_no_env_token_is_a_noop(self, monkeypatch) -> None:
+        from src.channels import config as channels_config
+
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("VIBE_TRADING_TELEGRAM_TOKEN", raising=False)
+        original = {"telegram": {"enabled": False, "token": ""}}
+        assert channels_config._apply_env_overrides(dict(original)) == original
