@@ -86,46 +86,71 @@ class TestDeployChatCommands:
         assert "TXFR1.TWF" in reply
         assert any("/deploy start TXFR1.TWF" in row[0] for row in buttons)
         assert any("/deploy kill" in row[0] for row in buttons)
+        assert any("/deploy pos" in row for row in buttons)
+        assert any("/deploy notify on" in row for row in buttons)
+
+    def test_status_notify_button_toggles_with_current_subscription(self, tmp_stores, approved) -> None:
+        notifier.subscribe("telegram", "chat1")
+        _mk_deployment()
+        _, buttons = _run("/deploy status")
+        assert any("/deploy notify off" in row for row in buttons)
+        assert not any("/deploy notify on" in row for row in buttons)
 
     def test_start_stop_toggle(self, tmp_stores, approved, stub_scheduler) -> None:
         dep = _mk_deployment()
-        reply, _ = _run("/deploy start TXFR1.TWF")
+        reply, buttons = _run("/deploy start TXFR1.TWF")
         assert "啟動" in reply
         assert deploy_store.get_deployment(dep.id).enabled is True
+        assert any("/deploy status" in row for row in buttons)
         reply, _ = _run(f"/deploy stop {dep.id}")  # by id also works
         assert deploy_store.get_deployment(dep.id).enabled is False
         assert stub_scheduler.toggles == 2
 
     def test_kill_and_resume(self, tmp_stores, approved) -> None:
-        reply, _ = _run("/deploy kill")
+        reply, buttons = _run("/deploy kill")
         assert deploy_store.kill_switch_engaged() is True
         assert "已啟動" in reply
+        assert any("/deploy status" in row for row in buttons)
         reply, _ = _run("/deploy resume")
         assert deploy_store.kill_switch_engaged() is False
 
     def test_flatten_requires_symbol_twice(self, tmp_stores, approved, stub_scheduler) -> None:
         _mk_deployment()
-        reply, _ = _run("/deploy flatten TXFR1.TWF")
+        reply, buttons = _run("/deploy flatten TXFR1.TWF")
         assert "兩次" in reply
         assert stub_scheduler.flattened == []
-        reply, _ = _run("/deploy flatten TXFR1.TWF TXFR1.TWF")
+        # No one-tap flatten button -- retyping the symbol twice is deliberate.
+        assert not any("/deploy flatten" in cell for row in buttons for cell in row)
+        reply, buttons = _run("/deploy flatten TXFR1.TWF TXFR1.TWF")
         assert len(stub_scheduler.flattened) == 1
+        assert any("/deploy status" in row for row in buttons)
 
     def test_dryrun_reports_planned_orders(self, tmp_stores, approved, stub_scheduler) -> None:
         _mk_deployment()
-        reply, _ = _run("/deploy dryrun TXFR1.TWF")
+        reply, buttons = _run("/deploy dryrun TXFR1.TWF")
         assert "Dry-run" in reply
         assert "buy 2" in reply
+        assert any("/deploy start TXFR1.TWF" in row[0] for row in buttons)
 
     def test_notify_on_off(self, tmp_stores, approved) -> None:
-        reply, _ = _run("/deploy notify on")
+        reply, buttons = _run("/deploy notify on")
         assert notifier.is_subscribed("telegram", "chat1")
-        reply, _ = _run("/deploy notify off")
+        assert any("/deploy status" in row for row in buttons)
+        reply, buttons = _run("/deploy notify off")
         assert not notifier.is_subscribed("telegram", "chat1")
+        assert any("/deploy notify on" in row for row in buttons)
 
     def test_unknown_subcommand_shows_help(self, tmp_stores, approved) -> None:
-        reply, _ = _run("/deploy bogus")
+        reply, buttons = _run("/deploy bogus")
         assert "/deploy status" in reply
+        assert any("/deploy status" in row for row in buttons)
+        assert any("/deploy pos" in row for row in buttons)
+
+    def test_help_includes_nav_buttons(self, tmp_stores, approved) -> None:
+        reply, buttons = _run("/deploy help")
+        assert "/deploy flatten" in reply
+        assert any("/deploy status" in row for row in buttons)
+        assert any("/deploy pos" in row for row in buttons)
 
     def test_positions_query(self, tmp_stores, approved, monkeypatch) -> None:
         """`/deploy pos` shows live broker positions with deployment attribution."""

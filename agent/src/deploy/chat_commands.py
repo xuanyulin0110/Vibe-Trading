@@ -44,6 +44,18 @@ def is_deploy_command(content: str) -> bool:
     return text == COMMAND_PREFIX or text.startswith(COMMAND_PREFIX + " ")
 
 
+def _nav_row() -> list[list[str]]:
+    """Quick-nav row appended after most replies.
+
+    Telegram's ``/`` autocomplete only shows top-level commands (no
+    subcommands), so without this a user has to retype ``/deploy status`` or
+    ``/deploy pos`` by hand after every action. A button's visible label IS
+    the command it sends (this framework has no separate display-vs-payload
+    text), so the labels stay literal commands rather than decorative text.
+    """
+    return [[f"{COMMAND_PREFIX} status", f"{COMMAND_PREFIX} pos"]]
+
+
 def _scheduler():
     from src.deploy import api as deploy_api
 
@@ -91,7 +103,7 @@ def handle_deploy_command(
 
     try:
         if sub in ("help", "?"):
-            return HELP_TEXT, []
+            return HELP_TEXT, _nav_row()
         if sub == "status":
             return _cmd_status(channel, chat_id)
         if sub in ("pos", "positions", "倉位"):
@@ -113,13 +125,13 @@ def handle_deploy_command(
             except Exception:  # noqa: BLE001 - chat must work without the API app
                 pass
             state = "已啟動 🔴" if store.kill_switch_engaged() else "已解除 🟢"
-            return f"全域緊急停止{state}", []
+            return f"全域緊急停止{state}", _nav_row()
         if sub == "notify":
             return _cmd_notify(channel, chat_id, args)
-        return f"未知指令 {sub!r}。\n\n{HELP_TEXT}", []
+        return f"未知指令 {sub!r}。\n\n{HELP_TEXT}", _nav_row()
     except Exception as exc:  # noqa: BLE001 - chat surface must reply, not die
         logger.exception("deploy chat command failed: %s", content)
-        return f"指令執行失敗：{type(exc).__name__}: {exc}", []
+        return f"指令執行失敗：{type(exc).__name__}: {exc}", _nav_row()
 
 
 def _cmd_status(channel: str, chat_id: str) -> tuple[str, list[list[str]]]:
@@ -132,6 +144,7 @@ def _cmd_status(channel: str, chat_id: str) -> tuple[str, list[list[str]]]:
         return "\n".join(lines), []
     lines.extend(_status_line(d) for d in deployments)
     subscribed = notifier.is_subscribed(channel, chat_id)
+    notify_label = f"{COMMAND_PREFIX} notify {'off' if subscribed else 'on'}"
     lines.append(f"\n推播：此對話{'已開啟 🔔' if subscribed else '未開啟（/deploy notify on）'}")
 
     buttons: list[list[str]] = []
@@ -140,6 +153,7 @@ def _cmd_status(channel: str, chat_id: str) -> tuple[str, list[list[str]]]:
         label = f"{COMMAND_PREFIX} {action} {dep.symbol}"
         if len(label.encode("utf-8")) <= 64:  # Telegram callback_data cap
             buttons.append([label])
+    buttons.append([f"{COMMAND_PREFIX} pos", notify_label])
     buttons.append(
         [f"{COMMAND_PREFIX} resume" if store.kill_switch_engaged() else f"{COMMAND_PREFIX} kill"]
     )
@@ -153,7 +167,7 @@ def _cmd_positions() -> tuple[str, list[list[str]]]:
 
     scheduler = _scheduler()
     if scheduler is None:
-        return "排程器未運行，無法查詢倉位。", []
+        return "排程器未運行，無法查詢倉位。", [[f"{COMMAND_PREFIX} status"]]
 
     deployments = store.list_deployments()
     environments = sorted({d.environment for d in deployments}) or ["paper"]
@@ -202,7 +216,7 @@ def _cmd_positions() -> tuple[str, list[list[str]]]:
                 except (TypeError, ValueError):
                     line += f" 未實現{pnl}"
             lines.append(line + tag)
-    return "\n".join(lines), []
+    return "\n".join(lines), [[f"{COMMAND_PREFIX} status"]]
 
 
 def _cmd_toggle(sub: str, args: list[str]) -> tuple[str, list[list[str]]]:
@@ -216,7 +230,7 @@ def _cmd_toggle(sub: str, args: list[str]) -> tuple[str, list[list[str]]]:
     if scheduler is not None:
         scheduler.on_deployment_toggled()
     verb = "已啟動 🟢" if sub == "start" else "已停止 ⚪"
-    return f"{dep.symbol} {verb}", []
+    return f"{dep.symbol} {verb}", _nav_row()
 
 
 def _cmd_dryrun(args: list[str]) -> tuple[str, list[list[str]]]:
@@ -238,16 +252,20 @@ def _cmd_dryrun(args: list[str]) -> tuple[str, list[list[str]]]:
     ]
     for order in orders:
         lines.append(f"  將下單: {order.get('side')} {order.get('quantity')} {order.get('symbol')}")
-    return "\n".join(lines), []
+    toggle = "stop" if dep.enabled else "start"
+    return "\n".join(lines), [[f"{COMMAND_PREFIX} {toggle} {dep.symbol}"], *_nav_row()]
 
 
 def _cmd_flatten(args: list[str]) -> tuple[str, list[list[str]]]:
     if len(args) < 2 or args[0].strip().upper() != args[1].strip().upper():
         target = args[0] if args else "<代號>"
+        # No one-tap button for the flatten command itself here -- the whole
+        # point of requiring the symbol twice is deliberate typing friction
+        # for an irreversible action; a button would silently defeat that.
         return (
             f"平倉需要輸入代號兩次確認：/deploy flatten {target} {target}\n"
             "（停用部署並以市價單將持倉全部歸零，無法還原）",
-            [],
+            _nav_row(),
         )
     dep = _find_deployment(args[0])
     if dep is None:
@@ -257,18 +275,18 @@ def _cmd_flatten(args: list[str]) -> tuple[str, list[list[str]]]:
         return "排程器未運行，無法平倉。", []
     results = scheduler.flatten(dep.id)
     oks = sum(1 for r in results if (r.get("response") or {}).get("status") == "ok")
-    return f"{dep.symbol} 已停止並送出平倉（{oks} 筆委託成功）。用 /deploy status 確認。", []
+    return f"{dep.symbol} 已停止並送出平倉（{oks} 筆委託成功）。用 /deploy status 確認。", _nav_row()
 
 
 def _cmd_notify(channel: str, chat_id: str, args: list[str]) -> tuple[str, list[list[str]]]:
     mode = args[0].lower() if args else ""
     if mode == "on":
         notifier.subscribe(channel, chat_id)
-        return "已開啟此對話的實盤推播 🔔（成交/失敗/平倉/緊急停止都會通知）", []
+        return "已開啟此對話的實盤推播 🔔（成交/失敗/平倉/緊急停止都會通知）", _nav_row()
     if mode == "off":
         notifier.unsubscribe(channel, chat_id)
-        return "已關閉此對話的實盤推播。", []
-    return "用法：/deploy notify on|off", []
+        return "已關閉此對話的實盤推播。", [[f"{COMMAND_PREFIX} notify on"], *_nav_row()]
+    return "用法：/deploy notify on|off", [[f"{COMMAND_PREFIX} notify on"], [f"{COMMAND_PREFIX} notify off"]]
 
 
 __all__: list[Any] = ["is_deploy_command", "handle_deploy_command", "COMMAND_PREFIX"]
