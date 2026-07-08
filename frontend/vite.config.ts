@@ -35,7 +35,21 @@ export default defineConfig(({ mode }) => {
       });
     },
   });
-  const apiProxy = withAuthHeader({ target: apiTarget, changeOrigin: true });
+  // changeOrigin false (the default) -- the backend's cross-site-POST guard
+  // (api_server.py's _reject_cross_site_browser_request) checks the browser's
+  // Origin header against the request's Host header to tell a same-site fetch
+  // from a cross-site one. Rewriting Host would point it at this proxy's
+  // Docker-internal target ("vibe-trading:8899"), which can never equal a
+  // real browser Origin (e.g. "100.78.149.102:5899") for ANY address --
+  // confirmed live 2026-07-08: every POST/PUT/DELETE from a LAN/Tailscale/
+  // WireGuard browser 403'd with "Cross-site request denied" (surfaced to the
+  // user as a generic "Add API key in Settings" message, since the frontend
+  // maps every 401/403 to that string regardless of the real backend detail).
+  // Only loopback-origin browsers were ever exempt, via a separate bypass.
+  // This backend has no TrustedHostMiddleware/virtual-hosting that needs Host
+  // rewritten to match the proxy target, so leaving it as the browser sent it
+  // is safe and is what makes the Origin/Host comparison meaningful again.
+  const apiProxy = withAuthHeader({ target: apiTarget, changeOrigin: false });
   const apiProxyWithHtmlFallback = {
     ...apiProxy,
     bypass(req: { headers: { accept?: string } }) {
