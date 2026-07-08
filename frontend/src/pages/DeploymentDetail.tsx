@@ -240,6 +240,7 @@ export function DeploymentDetail() {
                 <thead className="text-xs uppercase text-muted-foreground">
                   <tr>
                     <th className="py-2 pr-4">Bar</th>
+                    <th className="py-2 pr-4">實際執行時間</th>
                     <th className="py-2 pr-4">訊號</th>
                     <th className="py-2 pr-4">目標/現況</th>
                     <th className="py-2 pr-4">狀態</th>
@@ -250,7 +251,12 @@ export function DeploymentDetail() {
                 <tbody>
                   {[...history.ticks].reverse().map((tick, i) => (
                     <tr key={i} className="border-t">
-                      <td className="py-2 pr-4 font-mono text-xs">{tick.bar_ts}</td>
+                      <td className="py-2 pr-4 font-mono text-xs" title="交易日標籤（日K固定為 00:00:00，非實際下單時間）">
+                        {tick.bar_ts}
+                      </td>
+                      <td className="py-2 pr-4 font-mono text-xs">
+                        {tick.executed_at ? new Date(tick.executed_at).toLocaleString() : "-"}
+                      </td>
                       <td className="py-2 pr-4 font-mono">{tick.signal_weight?.toFixed(3) ?? "-"}</td>
                       <td className="py-2 pr-4 font-mono">
                         {tick.target_qty ?? "-"} / {tick.current_qty ?? "-"}

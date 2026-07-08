@@ -50,8 +50,19 @@ COPY agent/ agent/
 # Copy built frontend
 COPY --from=frontend-build /app/frontend/dist frontend/dist
 
-# Install CLI entrypoint
-RUN pip install --no-cache-dir -e .
+# Install CLI entrypoint + the telegram channel extra -- python-telegram-bot
+# is declared in pyproject.toml's optional "telegram"/"channels" groups, not
+# the base dependency list, so a plain "pip install -e ." never pulls it in.
+# Confirmed live 2026-07-08: the Telegram integration built and tested this
+# session (notifier.py, chat_commands.py, ChannelRuntime's /deploy
+# interception) was never actually reachable in this docker-compose
+# deployment -- every boot logged "telegram channel not available:
+# ModuleNotFoundError: No module named 'telegram'" and silently ran with
+# "No channels enabled". Installing only the "telegram" extra (not the much
+# heavier "channels" extra, which also pulls in Slack/Discord/WhatsApp/QQ/
+# Matrix/DingTalk/Lark/WeCom clients nothing here configures) keeps the
+# image lean while matching what agent/.env actually turns on.
+RUN pip install --no-cache-dir -e ".[telegram]"
 
 # Runtime should not run as root. Keep writable app data directories owned by
 # the service user so named Docker volumes inherit usable permissions.
