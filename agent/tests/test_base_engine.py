@@ -9,9 +9,28 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.engines.base import BaseEngine, _align, _load_optimizer
+from backtest.engines.base import BaseEngine, _align, _load_optimizer, _trade_timestamp
 from backtest.engines.china_a import ChinaAEngine
 from backtest.models import Position
+
+
+class TestTradeTimestamp:
+    """Found live 2026-07-08: trades.csv wrote every trade's timestamp as
+    str(t.entry_time.date()) unconditionally, discarding time-of-day even
+    for intraday-interval runs. Every trade on the same day collapsed onto
+    one "timestamp" string, and the chart layer's marker-to-bar join (an
+    exact-string match against price bars, which DO carry full timestamps)
+    then couldn't resolve any of them to a bar -- every buy/sell marker on
+    an intraday run's chart silently failed to render."""
+
+    def test_midnight_timestamp_stays_date_only(self) -> None:
+        assert _trade_timestamp(pd.Timestamp("2026-04-01")) == "2026-04-01"
+
+    def test_intraday_timestamp_keeps_time_of_day(self) -> None:
+        assert _trade_timestamp(pd.Timestamp("2026-04-01 09:05:00")) == "2026-04-01 09:05:00"
+
+    def test_non_timestamp_value_falls_back_to_str(self) -> None:
+        assert _trade_timestamp("2026-04-01") == "2026-04-01"
 
 
 # ---------------------------------------------------------------------------

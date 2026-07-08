@@ -71,6 +71,25 @@ def _detect_market_for_align(code: str) -> str:
     return "equity"
 
 
+def _trade_timestamp(ts: Any) -> str:
+    """Format a trade's entry/exit timestamp for trades.csv.
+
+    Daily-bar timestamps (time component is midnight) keep the existing
+    date-only format; intraday timestamps keep their time-of-day. Writing
+    ``str(ts.date())`` unconditionally (the previous behavior) discarded
+    time-of-day for every interval, including 5m/15m/etc -- every trade on
+    the same day collapsed onto one "timestamp" string, which the chart
+    layer's marker-to-bar join (an exact-string Map lookup, see
+    ui_services.py's build_trade_markers) then couldn't resolve to any bar
+    at all, since price bars already carry full timestamps: every buy/sell
+    marker on an intraday run's chart silently failed to render.
+    """
+    if hasattr(ts, "date") and hasattr(ts, "hour"):
+        midnight = ts.hour == 0 and ts.minute == 0 and ts.second == 0 and ts.microsecond == 0
+        return str(ts.date()) if midnight else str(ts)
+    return str(ts)
+
+
 # ─── Signal alignment (reused from daily_portfolio logic) ───
 
 
@@ -777,7 +796,7 @@ class BaseEngine(ABC):
         for t in self.trades:
             # Entry event
             trade_rows.append({
-                "timestamp": str(t.entry_time.date()) if hasattr(t.entry_time, "date") else str(t.entry_time),
+                "timestamp": _trade_timestamp(t.entry_time),
                 "code": t.symbol,
                 "side": "buy" if t.direction == 1 else "sell",
                 "price": round(t.entry_price, 4),
@@ -793,7 +812,7 @@ class BaseEngine(ABC):
             except Exception:
                 hold_days = 0
             trade_rows.append({
-                "timestamp": str(t.exit_time.date()) if hasattr(t.exit_time, "date") else str(t.exit_time),
+                "timestamp": _trade_timestamp(t.exit_time),
                 "code": t.symbol,
                 "side": "sell" if t.direction == 1 else "buy",
                 "price": round(t.exit_price, 4),

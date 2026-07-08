@@ -296,7 +296,16 @@ def build_trade_markers(
         timestamp = str(row.get("timestamp") or "")
         markers.append(
             {
-                "time": timestamp[:10],
+                # Must match price bars' own "time" format exactly -- the
+                # chart positions a marker by an exact-string x-axis match
+                # (see CandlestickChart.tsx's coord: [m.time, m.price]), so
+                # truncating this to date-only for an intraday run leaves no
+                # bar on the x-axis with that literal label and the marker
+                # silently fails to render. trades.csv already carries a
+                # non-truncated timestamp for intraday trades as of the
+                # backtest engine's _trade_timestamp() fix; this just avoids
+                # re-truncating it here.
+                "time": _format_bar_timestamp(timestamp) or timestamp[:10],
                 "timestamp": timestamp,
                 "code": row.get("code"),
                 "side": side,

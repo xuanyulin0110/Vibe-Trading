@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from src.ui_services import _load_ohlcv_artifacts, _normalize_price_rows, build_indicator_series
+from src.ui_services import _load_ohlcv_artifacts, _normalize_price_rows, build_indicator_series, build_trade_markers
 
 
 def _write_ohlcv_csv(path: Path, header: str, rows: list[str]) -> None:
@@ -158,3 +158,26 @@ class TestIntradayTimestampsPreserveTimeOfDay:
         times = [pt["time"] for pt in series["MXFR1.TWF"]["ma2"]]
         assert times == ["2026-04-01 09:00:00", "2026-04-01 09:05:00", "2026-04-01 09:10:00"]
         assert len(set(times)) == 3
+
+
+class TestTradeMarkersMatchBarTimeFormat:
+    """Found live 2026-07-08 right after fixing the dashed-MA-line bug above:
+    buy/sell markers disappeared from an intraday run's chart. Cause: this
+    was the one place still hardcoding timestamp[:10] -- once price bars
+    started carrying full "YYYY-MM-DD HH:MM:SS" timestamps, a marker's
+    date-only "time" no longer matched ANY bar on the x-axis (the chart
+    positions a marker via coord: [m.time, m.price], an exact string match
+    against the category axis), so every marker on an intraday chart
+    silently failed to render even though the trade data itself was fine."""
+
+    def test_intraday_trade_timestamp_keeps_time_of_day(self) -> None:
+        markers = build_trade_markers([
+            {"timestamp": "2026-04-01 09:05:00", "code": "MXFR1.TWF", "side": "buy", "price": "100"},
+        ])
+        assert markers[0]["time"] == "2026-04-01 09:05:00"
+
+    def test_daily_trade_timestamp_still_gets_plain_date(self) -> None:
+        markers = build_trade_markers([
+            {"timestamp": "2026-04-01", "code": "2330.TW", "side": "buy", "price": "600"},
+        ])
+        assert markers[0]["time"] == "2026-04-01"
