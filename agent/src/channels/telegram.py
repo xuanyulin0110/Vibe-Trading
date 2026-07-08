@@ -412,6 +412,7 @@ class TelegramChannel(BaseChannel):
         BotCommand("history", "Show recent conversation messages"),
         BotCommand("goal", "Start a sustained objective (long-running task)"),
         BotCommand("pairing", "Manage DM pairing (approve/deny/list)"),
+        BotCommand("deploy", "Control deterministic live/paper deployments"),
         BotCommand("model", "Switch runtime model preset"),
         BotCommand("skill", "List enabled skills"),
         BotCommand("dream", "Run Dream memory consolidation now"),
@@ -422,8 +423,19 @@ class TelegramChannel(BaseChannel):
 
     # Regex for slash commands routed to AgentLoop via ``_forward_command``.
     # Hyphenated ``dream-*`` commands stay on a separate handler (below).
+    #
+    # "deploy" was missing here until 2026-07-08: found live after a real
+    # user paired successfully but "/deploy help" got no reply at all.
+    # Telegram treats any leading-"/" message as a command (filters.COMMAND),
+    # which excludes it from the plain-text handler (~filters.COMMAND) --
+    # and it didn't match this regex either, so python-telegram-bot's
+    # dispatcher had no handler for it whatsoever. The whole /deploy chat
+    # integration (chat_commands.py, ChannelRuntime's interception, all its
+    # tests) was correctly built and tested at the MessageBus level, but
+    # never actually reachable through the real Telegram bot because this
+    # adapter-level allowlist never forwarded the message onto the bus.
     TELEGRAM_BUS_SLASH_COMMAND_RE = re.compile(
-        r"^/(?:new|stop|restart|status|dream|history|goal|pairing|model|skill)(?:@\w+)?(?:\s+.*)?$"
+        r"^/(?:new|stop|restart|status|dream|history|goal|pairing|deploy|model|skill)(?:@\w+)?(?:\s+.*)?$"
     )
 
     @classmethod
