@@ -153,15 +153,49 @@ def config_path() -> Path:
     return get_runtime_root() / CONFIG_FILENAME
 
 
+#: Env fallbacks for secrets not present in shioaji.json -- keeps credentials
+#: in agent/.env alongside every other secret (FINLAB_API_TOKEN,
+#: TELEGRAM_BOT_TOKEN) as the primary path; shioaji.json remains for anyone
+#: who prefers a dedicated file or a non-default profile per field.
+_ENV_API_KEY = "SJ_API_KEY"
+_ENV_SECRET_KEY = "SJ_SEC_KEY"
+_ENV_CA_PATH = "SJ_CA_PATH"
+_ENV_CA_PASSWD = "SJ_CA_PASSWD"
+
+
 def load_config() -> ShioajiConfig:
-    """Load Shioaji settings from ``~/.vibe-trading/shioaji.json``."""
+    """Load Shioaji settings: ``~/.vibe-trading/shioaji.json`` <- env fallback.
+
+    A field already set in the file wins; only fields the file leaves empty
+    are filled from the environment. This is every caller's entry point
+    (``build_config`` and the deploy runtime's ``SessionManager`` both start
+    here), so the env fallback applies uniformly -- no separate "does this
+    code path remember to check SJ_API_KEY" question anywhere else.
+    """
     path = config_path()
     if not path.exists():
-        return ShioajiConfig()
-    try:
-        return ShioajiConfig.from_mapping(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise ShioajiConfigError(f"invalid Shioaji config at {path}: {exc}") from exc
+        cfg = ShioajiConfig()
+    else:
+        try:
+            cfg = ShioajiConfig.from_mapping(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ShioajiConfigError(f"invalid Shioaji config at {path}: {exc}") from exc
+    return _apply_env_fallback(cfg)
+
+
+def _apply_env_fallback(cfg: ShioajiConfig) -> ShioajiConfig:
+    fields: dict[str, str] = {}
+    if not cfg.api_key and os.environ.get(_ENV_API_KEY, "").strip():
+        fields["api_key"] = os.environ[_ENV_API_KEY].strip()
+    if not cfg.secret_key and os.environ.get(_ENV_SECRET_KEY, "").strip():
+        fields["secret_key"] = os.environ[_ENV_SECRET_KEY].strip()
+    if not cfg.ca_path and os.environ.get(_ENV_CA_PATH, "").strip():
+        fields["ca_path"] = os.environ[_ENV_CA_PATH].strip()
+    if not cfg.ca_passwd and os.environ.get(_ENV_CA_PASSWD, ""):
+        fields["ca_passwd"] = os.environ[_ENV_CA_PASSWD]
+    if not fields:
+        return cfg
+    return ShioajiConfig.from_mapping({**asdict(cfg), **fields})
 
 
 def save_config(config: ShioajiConfig) -> Path:

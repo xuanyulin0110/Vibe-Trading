@@ -1920,13 +1920,29 @@ def main():
              "binds only the container's internal loopback, not the bridge-network-"
              "facing interface the port forward actually connects to)",
     )
+    parser.add_argument(
+        "--allowed-hosts", default="*",
+        help="Comma-separated Host-header allowlist for --transport http/sse "
+             "(only used there). FastMCP's HostOriginGuardMiddleware rejects any "
+             "request whose Host header isn't in this list with 421 Misdirected "
+             "Request, DEFAULT_HOSTS is only 127.0.0.1/localhost/::1 -- confirmed "
+             "live (2026-07-08) that this 421s every request from a LAN/Tailscale/ "
+             "WireGuard client, since none of those match. Default '*' matches this "
+             "deployment's existing no-auth LAN/VPN-wide access posture (same as "
+             "--host 0.0.0.0 above and the frontend's port 5899); narrow it to "
+             "specific IPs/hostnames if this port is ever exposed more broadly.",
+    )
     args = parser.parse_args()
     _include_shell_tools = True if args.transport == "stdio" else _env_shell_tools_enabled()
     _registry = None
     _get_registry()  # pre-warm: avoids deadlock when first tools/call lazy-inits inside FastMCP worker thread
 
     if args.transport in ("http", "sse"):
-        mcp.run(transport=args.transport, host=args.host, port=args.port)
+        allowed_hosts = [h.strip() for h in args.allowed_hosts.split(",") if h.strip()]
+        mcp.run(
+            transport=args.transport, host=args.host, port=args.port,
+            allowed_hosts=allowed_hosts, allowed_origins=allowed_hosts,
+        )
     else:
         mcp.run()
 

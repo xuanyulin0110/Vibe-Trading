@@ -24,6 +24,21 @@ the modern single-endpoint Streamable HTTP transport behaves. Confirmed via
 HTTP) accordingly; `sse` is kept as a selectable transport for any client that
 still needs the legacy shape, and both must bind `0.0.0.0` for the same
 Docker-port-mapping reason above.
+
+Found again 2026-07-08: agy and Claude Code both failed to reconnect over a
+Tailscale IP with "HTTP 421 Misdirected Request" / "Misdirected Request".
+FastMCP's `HostOriginGuardMiddleware` (DNS-rebinding protection) rejects any
+request whose `Host` header isn't in `DEFAULT_HOSTS`
+(`127.0.0.1`/`localhost`/`::1`) plus whatever `allowed_hosts` the caller
+passed in -- confirmed live via `docker logs` showing 421s for every `/mcp`
+and `/sse` request from the LAN bridge, and by reading
+`fastmcp/server/http.py` directly in the container. `mcp.run()` never passed
+`allowed_hosts`/`allowed_origins` at all, so only loopback ever worked --
+this deployment's LAN/Tailscale/WireGuard clients (`docs/OPERATIONS.md`
+section 5) never had a chance. Added `--allowed-hosts` (default `"*"`,
+matching this deployment's already-accepted no-auth LAN/VPN-wide posture,
+same as `--host 0.0.0.0` above), threaded into both `allowed_hosts` and
+`allowed_origins`.
 """
 
 from __future__ import annotations
@@ -67,6 +82,30 @@ class TestHttpFamilyHostBinding:
         _, kwargs = mcp_server_module.mcp.run.call_args
         assert kwargs["host"] == "127.0.0.1"
         assert kwargs["port"] == 9000
+
+    @pytest.mark.parametrize("transport", ["http", "sse"])
+    def test_default_allowed_hosts_is_wildcard(
+        self, mcp_server_module, monkeypatch: pytest.MonkeyPatch, transport: str,
+    ) -> None:
+        """FastMCP's HostOriginGuardMiddleware 421s any Host not in its allowlist
+        (default 127.0.0.1/localhost/::1 only) -- must pass a wildcard so LAN/
+        Tailscale/WireGuard clients aren't rejected."""
+        monkeypatch.setattr(sys, "argv", ["vibe-trading-mcp", "--transport", transport])
+        mcp_server_module.main()
+        _, kwargs = mcp_server_module.mcp.run.call_args
+        assert kwargs["allowed_hosts"] == ["*"]
+        assert kwargs["allowed_origins"] == ["*"]
+
+    def test_allowed_hosts_is_overridable_and_comma_separated(
+        self, mcp_server_module, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            sys, "argv",
+            ["vibe-trading-mcp", "--transport", "http", "--allowed-hosts", "10.0.0.195, 100.78.149.102"],
+        )
+        mcp_server_module.main()
+        _, kwargs = mcp_server_module.mcp.run.call_args
+        assert kwargs["allowed_hosts"] == ["10.0.0.195", "100.78.149.102"]
 
     def test_stdio_transport_does_not_pass_host_or_port(
         self, mcp_server_module, monkeypatch: pytest.MonkeyPatch,

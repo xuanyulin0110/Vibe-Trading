@@ -696,11 +696,58 @@ def test_shioaji_classification() -> None:
 
 def test_shioaji_service_unconfigured(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(sj, "get_runtime_root", lambda: tmp_path)
+    for name in ("SJ_API_KEY", "SJ_SEC_KEY", "SJ_CA_PATH", "SJ_CA_PASSWD"):
+        monkeypatch.delenv(name, raising=False)
     result = service.check_connection("shioaji-paper-sdk")
     assert result["status"] == "error"
     assert "not configured" in result["error"]
     assert result["connector"] == "shioaji"
     assert result["transport"] == "broker_sdk"
+
+
+def test_shioaji_load_config_falls_back_to_env(monkeypatch, tmp_path) -> None:
+    """SJ_API_KEY/SJ_SEC_KEY/SJ_CA_PATH/SJ_CA_PASSWD live in agent/.env like every
+    other secret (FINLAB_API_TOKEN, TELEGRAM_BOT_TOKEN) -- no shioaji.json required."""
+    monkeypatch.setattr(sj, "get_runtime_root", lambda: tmp_path)
+    monkeypatch.setenv("SJ_API_KEY", "env-key")
+    monkeypatch.setenv("SJ_SEC_KEY", "env-secret")
+    monkeypatch.setenv("SJ_CA_PATH", "/env/ca.pfx")
+    monkeypatch.setenv("SJ_CA_PASSWD", "env-pw")
+
+    cfg = sj.load_config()
+
+    assert cfg.api_key == "env-key"
+    assert cfg.secret_key == "env-secret"
+    assert cfg.ca_path == "/env/ca.pfx"
+    assert cfg.ca_passwd == "env-pw"
+
+
+def test_shioaji_file_config_wins_over_env(monkeypatch, tmp_path) -> None:
+    """A field already set in shioaji.json is never overridden by the env fallback."""
+    monkeypatch.setattr(sj, "get_runtime_root", lambda: tmp_path)
+    monkeypatch.setenv("SJ_API_KEY", "env-key")
+    sj.save_config(sj.ShioajiConfig(api_key="file-key", secret_key="file-secret"))
+
+    cfg = sj.load_config()
+
+    assert cfg.api_key == "file-key"
+    assert cfg.secret_key == "file-secret"
+
+
+def test_shioaji_service_configured_via_env_only(monkeypatch, tmp_path) -> None:
+    """The generic trading-connector path (trading_check/place_order MCP
+    tools) must pick up env credentials too, not just the deploy runtime.
+    Stubs _login to avoid a real network call -- this test only asserts the
+    config resolves past the "missing api_key/secret_key" gate."""
+    monkeypatch.setattr(sj, "get_runtime_root", lambda: tmp_path)
+    monkeypatch.setenv("SJ_API_KEY", "env-key")
+    monkeypatch.setenv("SJ_SEC_KEY", "env-secret")
+    monkeypatch.setattr(sj, "_login", lambda cfg: _FakeShioajiApi())
+
+    result = service.check_connection("shioaji-paper-sdk")
+
+    assert result["config"]["api_key"] != ""
+    assert result.get("error") != "Shioaji connector not configured: missing api_key, secret_key."
 
 
 class _FakeShioajiContract:

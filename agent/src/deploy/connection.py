@@ -54,19 +54,16 @@ class SessionManager:
 
     @staticmethod
     def _config_for(environment: str) -> sdk.ShioajiConfig:
-        """Saved shioaji.json with the environment's profile, falling back to
-        the loader env vars (SJ_API_KEY/SJ_SEC_KEY) for credentials so a
-        deployment works wherever backtests already work."""
-        import os
+        """Saved shioaji.json for this environment's profile.
 
+        ``sdk.load_config()`` already falls back to SJ_API_KEY/SJ_SEC_KEY/
+        SJ_CA_PATH/SJ_CA_PASSWD when the file leaves a field empty, so a
+        deployment works with credentials living only in agent/.env, same as
+        the backtest loaders and every other Shioaji entry point.
+        """
         cfg = sdk.load_config()
         profile = "paper" if environment == "paper" else "live"
-        overrides: dict[str, str] = {"profile": profile}
-        if not cfg.api_key and os.getenv("SJ_API_KEY", "").strip():
-            overrides["api_key"] = os.environ["SJ_API_KEY"].strip()
-        if not cfg.secret_key and os.getenv("SJ_SEC_KEY", "").strip():
-            overrides["secret_key"] = os.environ["SJ_SEC_KEY"].strip()
-        return cfg.with_overrides(**overrides)
+        return cfg.with_overrides(profile=profile)
 
     # -- lifecycle ----------------------------------------------------------
 
