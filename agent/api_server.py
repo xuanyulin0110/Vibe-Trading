@@ -1169,8 +1169,10 @@ def _build_llm_settings_response(values: Optional[Dict[str, str]] = None) -> LLM
     env_values = values if values is not None else _read_settings_env_values()
     provider_name = env_values.get("LANGCHAIN_PROVIDER", "openai").strip().lower()
     provider = LLM_PROVIDER_BY_NAME.get(provider_name, LLM_PROVIDER_BY_NAME["openai"])
-    api_key = env_values.get(provider.api_key_env or "", "") if provider.api_key_env else ""
-    api_key_configured = _is_configured_secret(api_key, LLM_API_KEY_PLACEHOLDERS)
+    api_key_configured = (
+        _is_secret_configured(env_values, provider.api_key_env, LLM_API_KEY_PLACEHOLDERS)
+        if provider.api_key_env else False
+    )
     api_key_hint = None
     if provider.auth_type == "oauth":
         try:
@@ -1212,17 +1214,40 @@ def _baostock_installed() -> bool:
     return importlib.util.find_spec("baostock") is not None
 
 
+def _is_secret_configured(env_values: Dict[str, str], key: str, placeholders: set[str]) -> bool:
+    """Whether ``key`` is genuinely configured: the on-disk value if it's a
+    real (non-placeholder) secret, otherwise the process environment
+    (docker-compose's ``env_file:`` injection).
+
+    A truthy-only fallback isn't enough here: ``.dockerignore`` deliberately
+    excludes ``agent/.env`` from the build context (secrets don't belong
+    baked into an image), but ``agent/.env.example`` is NOT excluded and IS
+    present in the container -- so ``_read_settings_env_values()`` falls back
+    to it and returns its documented PLACEHOLDER text (e.g.
+    ``FINLAB_API_TOKEN=your-finlab-token``), which is non-empty and would
+    short-circuit a plain ``or`` fallback before ever checking the real
+    environment. Confirmed live 2026-07-08: FINLAB_API_TOKEN/SJ_API_KEY were
+    both set and working (finlab loader, Shioaji connector, deploy runtime
+    all use them fine), yet the Settings page reported "Not configured" for
+    both. Same env-fallback pattern already applied to Shioaji SDK config
+    (sdk.py::load_config) and the Telegram channel config today, just with
+    an extra placeholder-aware step here.
+    """
+    if _is_configured_secret(env_values.get(key, ""), placeholders):
+        return True
+    return _is_configured_secret(os.environ.get(key, ""), placeholders)
+
+
 def _build_data_source_settings_response(values: Optional[Dict[str, str]] = None) -> DataSourceSettingsResponse:
     """Build the public data source settings payload."""
     env_values = values if values is not None else _read_settings_env_values()
-    token = env_values.get("TUSHARE_TOKEN", "")
-    token_configured = _is_configured_secret(token, TUSHARE_TOKEN_PLACEHOLDERS)
-    finlab_token_configured = _is_configured_secret(
-        env_values.get("FINLAB_API_TOKEN", ""), FINLAB_TOKEN_PLACEHOLDERS
+    token_configured = _is_secret_configured(env_values, "TUSHARE_TOKEN", TUSHARE_TOKEN_PLACEHOLDERS)
+    finlab_token_configured = _is_secret_configured(
+        env_values, "FINLAB_API_TOKEN", FINLAB_TOKEN_PLACEHOLDERS
     )
-    shioaji_configured = _is_configured_secret(
-        env_values.get("SJ_API_KEY", ""), SHIOAJI_KEY_PLACEHOLDERS
-    ) and _is_configured_secret(env_values.get("SJ_SEC_KEY", ""), SHIOAJI_KEY_PLACEHOLDERS)
+    shioaji_configured = _is_secret_configured(
+        env_values, "SJ_API_KEY", SHIOAJI_KEY_PLACEHOLDERS
+    ) and _is_secret_configured(env_values, "SJ_SEC_KEY", SHIOAJI_KEY_PLACEHOLDERS)
     supported = _baostock_supported()
     installed = _baostock_installed()
     if supported:

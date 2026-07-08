@@ -36,6 +36,11 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(api_server, "_baostock_supported", lambda: False)
     monkeypatch.setattr(api_server, "_baostock_installed", lambda: False)
     monkeypatch.delenv("API_AUTH_KEY", raising=False)
+    for name in (
+        "FINLAB_API_TOKEN", "SJ_API_KEY", "SJ_SEC_KEY", "TUSHARE_TOKEN",
+        "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
     return TestClient(api_server.app, client=("127.0.0.1", 50000))
 
 
@@ -142,6 +147,67 @@ def test_get_data_source_settings_shioaji_requires_both_keys(
 
     assert response.status_code == 200
     assert response.json()["shioaji_configured"] is False
+
+
+def test_get_data_source_settings_falls_back_to_process_env(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """docker-compose's env_file: injects secrets into the process env without
+    ever writing agent/.env into the container (.dockerignore excludes it on
+    purpose) -- confirmed live 2026-07-08 that this made every docker-compose
+    deployment report every secret as "Not configured" regardless of the real
+    value, since the endpoint only ever read the (absent) file."""
+    monkeypatch.setenv("FINLAB_API_TOKEN", "real-finlab-token")
+    monkeypatch.setenv("SJ_API_KEY", "real-sj-key")
+    monkeypatch.setenv("SJ_SEC_KEY", "real-sj-secret")
+
+    response = client.get("/settings/data-sources")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["finlab_token_configured"] is True
+    assert body["shioaji_configured"] is True
+
+
+def test_get_data_source_settings_env_backfills_placeholder_file_value(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent/.env.example (NOT dockerignored, unlike agent/.env) is baked into
+    every docker-compose image and read as the display-default fallback when
+    agent/.env is absent -- its documented placeholder text must not block
+    the env_file: value from counting as configured."""
+    (tmp_path / ".env").write_text("FINLAB_API_TOKEN=your-finlab-token\n", encoding="utf-8")
+    monkeypatch.setenv("FINLAB_API_TOKEN", "real-finlab-token")
+
+    response = client.get("/settings/data-sources")
+
+    assert response.json()["finlab_token_configured"] is True
+
+
+def test_get_data_source_settings_placeholder_env_value_still_unconfigured(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The env fallback still runs the same placeholder check -- a placeholder
+    in the environment doesn't get treated as configured just because it's
+    not on disk."""
+    monkeypatch.setenv("FINLAB_API_TOKEN", "your-finlab-token")
+
+    response = client.get("/settings/data-sources")
+
+    assert response.json()["finlab_token_configured"] is False
+
+
+def test_get_llm_settings_falls_back_to_process_env(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same env_file: gap for the LLM provider key (OPENROUTER_API_KEY per
+    the fixture's default provider)."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-real-key")
+
+    response = client.get("/settings/llm")
+
+    assert response.status_code == 200
+    assert response.json()["api_key_configured"] is True
 
 
 def test_settings_response_never_exposes_configured_secret_hints(
