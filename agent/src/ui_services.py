@@ -45,6 +45,31 @@ def format_run_date(date_str: Optional[str]) -> Optional[str]:
     return value
 
 
+def _format_bar_timestamp(value: Any) -> Optional[str]:
+    """Normalize a single OHLC bar's timestamp for charting, preserving time-of-day.
+
+    ``format_run_date()`` is for a run's single ``start_date``/``end_date``
+    metadata field, where truncating to ``YYYY-MM-DD`` is correct by
+    definition. Applying that same truncation per-bar breaks any
+    intraday-interval run (5m/15m/30m/1h/4h): every bar within a day
+    collapses onto the same "time" string, which the frontend's
+    indicator-overlay lookup (a ``Map`` keyed by this exact string) then
+    resolves to just the last bar written for that key -- so a proper
+    moving average degenerates into one flat value repeated for the whole
+    day, only stepping at day boundaries. Found live 2026-07-08 reviewing a
+    5m Granville strategy's chart. Daily-bar runs are unaffected: their
+    timestamps have no time-of-day component to begin with.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+    return text
+
+
 def load_json_file(path: Path) -> Optional[Dict[str, Any]]:
     """Load a JSON file if it exists.
 
@@ -322,7 +347,7 @@ def build_indicator_series(
             (
                 {
                     **row,
-                    "time": str(row.get("time") or format_run_date(row.get("timestamp")) or ""),
+                    "time": str(row.get("time") or _format_bar_timestamp(row.get("timestamp")) or ""),
                 }
                 for row in rows
             ),
@@ -591,7 +616,7 @@ def _normalize_price_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for row in rows:
         # See _load_ohlcv_artifacts()'s comment -- "date" is a real column
         # name a source DataFrame's index can carry through to CSV.
-        timestamp = format_run_date(row.get("timestamp") or row.get("time") or row.get("date"))
+        timestamp = _format_bar_timestamp(row.get("timestamp") or row.get("time") or row.get("date"))
         if not timestamp:
             continue
         normalized.append(
@@ -631,10 +656,15 @@ def _flatten_data_map(data_map: Dict[str, Any], start_date: str) -> List[Dict[st
         current = current[current.index >= clip_dt]
         current = current.sort_index()
         for timestamp, row in current.iterrows():
+            ts = pd.Timestamp(timestamp)
+            # Preserve time-of-day for intraday-interval runs -- see
+            # _format_bar_timestamp()'s docstring for why truncating every
+            # bar to its date collapses same-day bars in downstream lookups.
+            ts_str = ts.strftime("%Y-%m-%d") if ts.time() == datetime.min.time() else ts.strftime("%Y-%m-%d %H:%M:%S")
             rows.append(
                 {
-                    "time": pd.Timestamp(timestamp).strftime("%Y-%m-%d"),
-                    "timestamp": pd.Timestamp(timestamp).strftime("%Y-%m-%d"),
+                    "time": ts_str,
+                    "timestamp": ts_str,
                     "code": code,
                     "open": round(float(row.get("open") or 0.0), 6),
                     "high": round(float(row.get("high") or 0.0), 6),

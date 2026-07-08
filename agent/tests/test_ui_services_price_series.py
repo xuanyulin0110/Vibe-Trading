@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from src.ui_services import _load_ohlcv_artifacts, _normalize_price_rows
+from src.ui_services import _load_ohlcv_artifacts, _normalize_price_rows, build_indicator_series
 
 
 def _write_ohlcv_csv(path: Path, header: str, rows: list[str]) -> None:
@@ -95,3 +95,66 @@ class TestNormalizePriceRowsDateColumn:
              "open": "1", "high": "1", "low": "1", "close": "1", "volume": "1"},
         ])
         assert rows[0]["time"] == "2024-01-02"
+
+
+class TestIntradayTimestampsPreserveTimeOfDay:
+    """Found live 2026-07-08 reviewing a 5m Granville strategy's chart: every
+    bar's "time" was truncated to just its date, so multiple bars sharing a
+    day collapsed onto one x-axis label. The frontend's indicator-overlay
+    Map lookup (keyed by this exact string) then resolved every same-day bar
+    to whichever bar's indicator value was written last for that key --
+    a proper moving average degenerated into one flat value per day, only
+    stepping at day boundaries. Daily-bar runs must keep their existing
+    date-only "YYYY-MM-DD" format unchanged."""
+
+    def test_intraday_bar_keeps_time_of_day(self) -> None:
+        rows = _normalize_price_rows([
+            {"timestamp": "2026-04-01 09:05:00", "code": "MXFR1.TWF",
+             "open": "1", "high": "1", "low": "1", "close": "1", "volume": "1"},
+        ])
+        assert rows[0]["time"] == "2026-04-01 09:05:00"
+
+    def test_daily_bar_still_gets_plain_date(self) -> None:
+        rows = _normalize_price_rows([
+            {"timestamp": "2026-04-01", "code": "2330.TW",
+             "open": "1", "high": "1", "low": "1", "close": "1", "volume": "1"},
+        ])
+        assert rows[0]["time"] == "2026-04-01"
+
+    def test_consecutive_intraday_bars_get_distinct_time_keys(self) -> None:
+        """The actual bug: two 5m bars on the same day must not collide."""
+        rows = _normalize_price_rows([
+            {"timestamp": "2026-04-01 09:00:00", "code": "MXFR1.TWF",
+             "open": "1", "high": "1", "low": "1", "close": "1", "volume": "1"},
+            {"timestamp": "2026-04-01 09:05:00", "code": "MXFR1.TWF",
+             "open": "1", "high": "1", "low": "1", "close": "2", "volume": "1"},
+        ])
+        assert {r["time"] for r in rows} == {"2026-04-01 09:00:00", "2026-04-01 09:05:00"}
+
+    def test_load_ohlcv_artifacts_preserves_intraday_time(self, tmp_path: Path) -> None:
+        _write_ohlcv_csv(
+            tmp_path / "artifacts" / "ohlcv_MXFR1.TWF.csv",
+            ",open,high,low,close,volume",
+            [
+                "2026-04-01 00:00:00,32846.2,32914.4,32833.0,32893.0,1315",
+                "2026-04-01 00:05:00,32892.0,32923.6,32880.8,32918.5,730",
+            ],
+        )
+        rows = _load_ohlcv_artifacts(tmp_path)
+        assert {r["time"] for r in rows} == {"2026-04-01 00:00:00", "2026-04-01 00:05:00"}
+
+    def test_indicator_series_points_keep_distinct_intraday_time_keys(self) -> None:
+        """The frontend joins price bars to indicator overlay points by an
+        exact "time" string match (Map-keyed lookup) -- if two bars in the
+        same day shared a key here, one indicator value would silently stand
+        in for both, which is exactly how the flat/day-stepped dashed MA
+        line happened."""
+        price_rows = [
+            {"time": "2026-04-01 09:00:00", "code": "MXFR1.TWF", "close": 100.0},
+            {"time": "2026-04-01 09:05:00", "code": "MXFR1.TWF", "close": 101.0},
+            {"time": "2026-04-01 09:10:00", "code": "MXFR1.TWF", "close": 102.0},
+        ]
+        series = build_indicator_series(price_rows, periods=[2])
+        times = [pt["time"] for pt in series["MXFR1.TWF"]["ma2"]]
+        assert times == ["2026-04-01 09:00:00", "2026-04-01 09:05:00", "2026-04-01 09:10:00"]
+        assert len(set(times)) == 3
