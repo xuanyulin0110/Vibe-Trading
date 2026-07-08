@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 _DEFAULT_FILENAMES = ("agent.json", "agent.yaml", "agent.yml")
+_DATA_DIR_ENV = "VIBE_TRADING_DATA_DIR"
 
 
 def get_runtime_root(config_path: Path | None = None) -> Path:
@@ -16,10 +18,15 @@ def get_runtime_root(config_path: Path | None = None) -> Path:
 
     Returns:
         The directory containing the explicit structured config file when one
-        is provided, otherwise the default ``~/.vibe-trading`` runtime root.
+        is provided; otherwise ``VIBE_TRADING_DATA_DIR`` if set (tests and
+        alternate deployments use this to redirect runtime state without
+        touching the real ``~/.vibe-trading``); otherwise that default.
     """
     if config_path is not None:
         return config_path.expanduser().parent
+    override = os.environ.get(_DATA_DIR_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
     return Path.home() / ".vibe-trading"
 
 

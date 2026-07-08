@@ -141,6 +141,20 @@ def deny_code(code: str) -> bool:
         return False
 
 
+def is_pairing_command(content: str) -> bool:
+    """Return whether *content* is a ``/pairing ...`` command.
+
+    Shared by every layer that must let ``/pairing`` through regardless of
+    ``is_allowed`` -- approving your own code is how an unapproved sender
+    *becomes* approved, so gating this command behind approval is a
+    deadlock: the sender can never reach the one command that would let
+    them in. Both ``BaseChannel._handle_message`` and the Telegram
+    adapter's slash-command router check this before their approval gate.
+    """
+    text = (content or "").strip()
+    return text == "/pairing" or text.startswith("/pairing ")
+
+
 def is_approved(channel: str, sender_id: str) -> bool:
     """Check whether *sender_id* has been approved on *channel*."""
     with _LOCK:

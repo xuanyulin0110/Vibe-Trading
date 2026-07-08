@@ -28,6 +28,7 @@ from telegram.request import HTTPXRequest
 from src.channels.bus.events import OutboundMessage
 from src.channels.bus.queue import MessageBus
 from src.channels.base import BaseChannel
+from src.channels.pairing import is_pairing_command
 
 from src.channels.utils import get_media_dir
 from pydantic import BaseModel
@@ -1367,10 +1368,6 @@ class TelegramChannel(BaseChannel):
         message = update.message
         user = update.effective_user
         sender_id = self._sender_id(user)
-        if not self.is_allowed(sender_id):
-            await self._send_pairing_code_if_private(sender_id, message, user)
-            return
-        self._remember_thread_context(message)
 
         # Strip @bot_username suffix if present
         content = message.text or ""
@@ -1379,6 +1376,19 @@ class TelegramChannel(BaseChannel):
             cmd_part = cmd_part.split("@")[0]
             content = f"{cmd_part} {rest[0]}" if rest else cmd_part
         content = self._normalize_telegram_command(content)
+
+        # /pairing must reach ChannelRuntime's gate-free interception even for
+        # an unapproved sender -- that's the entire point of self-service
+        # pairing (approving your own code IS how you become approved).
+        # Found live 2026-07-08: the is_allowed gate below used to run first
+        # for every command, so /pairing approve <code> from an unapproved
+        # sender never got past it -- it just fired _send_pairing_code_if_private
+        # again (issuing a fresh code and discarding the approve attempt),
+        # a deadlock where the sender could never self-approve.
+        if not is_pairing_command(content) and not self.is_allowed(sender_id):
+            await self._send_pairing_code_if_private(sender_id, message, user)
+            return
+        self._remember_thread_context(message)
 
         await self._handle_message(
             sender_id=sender_id,

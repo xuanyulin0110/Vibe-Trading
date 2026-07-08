@@ -14,7 +14,7 @@ from typing import Any
 from src.channels.bus.events import InboundMessage, OutboundMessage
 from src.channels.bus.queue import MessageBus
 from src.channels.manager import ChannelManager
-from src.channels.pairing import PAIRING_COMMAND_META_KEY, handle_pairing_command
+from src.channels.pairing import PAIRING_COMMAND_META_KEY, handle_pairing_command, is_pairing_command
 from src.config.paths import get_data_dir
 from src.session.models import Message, Session
 
@@ -107,7 +107,7 @@ class ChannelRuntime:
 
     async def _handle_inbound(self, msg: InboundMessage) -> None:
         try:
-            if self._is_pairing_command(msg.content):
+            if is_pairing_command(msg.content):
                 reply = handle_pairing_command(msg.channel, msg.content.split(None, 1)[1] if " " in msg.content else "list")
                 await self.bus.publish_outbound(
                     OutboundMessage(
@@ -221,10 +221,6 @@ class ChannelRuntime:
         tmp = self.session_map_path.with_suffix(self.session_map_path.suffix + ".tmp")
         tmp.write_text(json.dumps(self._session_map, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(self.session_map_path)
-
-    @staticmethod
-    def _is_pairing_command(content: str) -> bool:
-        return content.strip() == "/pairing" or content.strip().startswith("/pairing ")
 
 
 def _session_id(session: Session | dict[str, Any] | Any) -> str:

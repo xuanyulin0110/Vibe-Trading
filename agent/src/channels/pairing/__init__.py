@@ -9,6 +9,7 @@ from src.channels.pairing.store import (
     get_approved,
     handle_pairing_command,
     is_approved,
+    is_pairing_command,
     list_pending,
     revoke,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "get_approved",
     "handle_pairing_command",
     "is_approved",
+    "is_pairing_command",
     "list_pending",
     "revoke",
 ]

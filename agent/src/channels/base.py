@@ -14,6 +14,7 @@ from src.channels.pairing import (
     format_pairing_reply,
     generate_code,
     is_approved,
+    is_pairing_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,26 @@ class BaseChannel(ABC):
         is_dm: bool = False,
     ) -> None:
         """Handle an incoming message: check permissions, issue pairing codes in DMs, or forward to bus."""
+        # /pairing must reach the bus even for an unapproved sender -- that's
+        # the entire point of self-service pairing (approving your own code
+        # IS how you become approved). Found live 2026-07-08: this gate used
+        # to run unconditionally, so a real "/pairing approve <code>" from an
+        # unapproved sender never got past it -- it silently discarded the
+        # approve attempt and issued a fresh code instead, a deadlock where
+        # the sender could never self-approve.
+        if is_pairing_command(content):
+            msg = InboundMessage(
+                channel=self.name,
+                sender_id=str(sender_id),
+                chat_id=str(chat_id),
+                content=content,
+                media=media or [],
+                metadata=metadata or {},
+                session_key_override=session_key,
+            )
+            await self.bus.publish_inbound(msg)
+            return
+
         if not self.is_allowed(sender_id):
             if is_dm:
                 code = generate_code(self.name, str(sender_id))
