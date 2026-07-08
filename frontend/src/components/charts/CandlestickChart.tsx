@@ -8,9 +8,10 @@ import { getChartTheme } from "@/lib/chart-theme";
 import { abbreviateNum } from "@/lib/formatters";
 import { echarts, CHART_GROUP, connectCharts } from "@/lib/echarts";
 import { useDarkMode } from "@/hooks/useDarkMode";
+import { computeRangeStart, type ChartRange } from "@/lib/chartRange";
 
 type Sub = "vol" | "macd" | "rsi" | "kdj";
-type Range = "1M" | "3M" | "6M" | "1Y" | "ALL";
+type Range = ChartRange;
 type Overlay = "ma5" | "ma10" | "ma20" | "ma60" | "ema12" | "ema26" | "boll";
 
 const OVERLAY_OPTIONS: { id: Overlay; label: string; group: string }[] = [
@@ -23,7 +24,6 @@ const OVERLAY_OPTIONS: { id: Overlay; label: string; group: string }[] = [
   { id: "boll", label: "BOLL", group: "Channel" },
 ];
 
-const RANGE_BARS: Record<Range, number> = { "1M": 22, "3M": 63, "6M": 126, "1Y": 252, ALL: Infinity };
 const OVERLAY_COLORS = ["#f59e0b", "#8b5cf6", "#3b82f6", "#ec4899", "#10b981", "#f97316", "#6366f1"];
 
 interface Props {
@@ -191,8 +191,7 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
       return { name: ind.name, type: "line" as const, data: ind.values, xAxisIndex: 0, yAxisIndex: 0, symbol: "none", lineStyle: { width: 1, color: OVERLAY_COLORS[(colorIdx + i) % OVERLAY_COLORS.length], type: "dashed" as const } };
     });
 
-    const maxBars = RANGE_BARS[range];
-    const defaultStart = maxBars >= data.length ? 0 : Math.max(0, 100 - (maxBars / data.length) * 100);
+    const defaultStart = computeRangeStart(baseData.dates, range);
 
     chart.setOption({
       backgroundColor: "transparent",
