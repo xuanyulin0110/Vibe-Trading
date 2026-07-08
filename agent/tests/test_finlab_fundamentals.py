@@ -76,6 +76,63 @@ class TestLazyLogin:
         assert provider._logged_in is True
 
 
+class TestFieldTableDropsNaTIndexRows:
+    """Found live 2026-07-09: a real futures_institutional_investors_trading_
+    summary table fetch crashed enrich_price_frames_with_finlab_fundamentals
+    with "ValueError: Merge keys contain null values on right side" --
+    confirmed against the actual finlab data that exactly one row of
+    finlab's own wide table has a NaT index (a genuine upstream data-quality
+    glitch, not something this loader introduces). pd.merge_asof hard-
+    requires non-null merge keys, so this crashed for every code and field
+    selected from the table, at every interval -- discovered via a 5m
+    futures backtest, but not actually specific to 5m vs daily."""
+
+    def test_nat_indexed_row_is_dropped_from_cached_table(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class _FakeData:
+            @staticmethod
+            def get(field_key: str) -> pd.DataFrame:
+                return pd.DataFrame(
+                    {"TXF": [100.0, 200.0, 300.0]},
+                    index=pd.DatetimeIndex([pd.NaT, pd.Timestamp("2026-07-08"), pd.Timestamp("2026-07-09")]),
+                )
+
+        class _FakeFinlabModule:
+            data = _FakeData()
+
+            @staticmethod
+            def login(token: str) -> None:
+                pass
+
+        monkeypatch.setenv("FINLAB_API_TOKEN", "real-token")
+        monkeypatch.setitem(sys.modules, "finlab", _FakeFinlabModule)
+        monkeypatch.setitem(sys.modules, "finlab.data", _FakeData)
+
+        provider = FinlabFundamentalProvider()
+        table = provider._field_table("some_field_key")
+
+        assert len(table) == 2
+        assert table.index.isna().sum() == 0
+
+    def test_enrichment_no_longer_crashes_with_a_nat_row_in_the_table(self) -> None:
+        wide = pd.DataFrame(
+            {"臺股期貨_外資及陸資": [100.0, 200.0]},
+            index=pd.DatetimeIndex([pd.NaT, pd.Timestamp("2026-04-01")]),
+        )
+        # _field_table() would have dropped the NaT row on fetch; simulate
+        # that directly since this provider is cache-pre-populated in tests.
+        provider = _provider_with_canned_tables(**{
+            "futures_institutional_investors_trading_summary:多空未平倉口數淨額": wide[wide.index.notna()],
+        })
+        price = pd.DataFrame(
+            {"open": [1.0, 1.0], "high": [1.0, 1.0], "low": [1.0, 1.0], "close": [1.0, 1.0], "volume": [1.0, 1.0]},
+            index=pd.date_range("2026-04-01 00:00:00", periods=2, freq="5min"),
+        )
+        enriched = enrich_price_frames_with_finlab_fundamentals(
+            {"TXFR1.TWF": price}, provider, {"futures_institutional": ["foreign_net_oi"]},
+        )
+        assert enriched["TXFR1.TWF"]["futures_institutional_foreign_net_oi"].iloc[0] == 200.0
+
+
 class TestProviderMetadata:
     def test_list_tables(self) -> None:
         provider = FinlabFundamentalProvider()

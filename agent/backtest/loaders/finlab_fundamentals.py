@@ -207,12 +207,26 @@ class FinlabFundamentalProvider:
             raise ValueError(f"Unsupported finlab fundamental table: {table}") from exc
 
     def _field_table(self, field_key: str) -> pd.DataFrame:
-        """Return the whole-market wide table for one field, fetched once per instance."""
+        """Return the whole-market wide table for one field, fetched once per instance.
+
+        Drops any row whose index is NaT before caching. Confirmed live
+        against ``futures_institutional_investors_trading_summary:多空未平倉口數淨額``
+        (2026-07-09): finlab's own table carries exactly one such row --
+        a genuine upstream data-quality glitch, not something our loader
+        introduces. ``enrich_price_frames_with_finlab_fundamentals()``'s
+        ``pd.merge_asof`` hard-requires non-null merge keys, so a single NaT
+        anywhere in a wide table crashed enrichment for every code and
+        every field ever selected from it, at every interval -- this
+        symptom happened to surface via a 5m futures backtest, but the
+        crash has nothing to do with 5m vs daily; the same NaT row would
+        just as surely poison a daily-bar merge querying this table.
+        """
         if field_key not in self._field_cache:
             self._ensure_logged_in()
             from finlab import data
 
-            self._field_cache[field_key] = data.get(field_key)
+            table = data.get(field_key)
+            self._field_cache[field_key] = table[table.index.notna()]
         return self._field_cache[field_key]
 
     def query_fundamentals(
