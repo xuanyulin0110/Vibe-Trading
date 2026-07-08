@@ -41,12 +41,10 @@ from typing import Any, Mapping
 import pandas as pd
 
 from backtest.loaders._shioaji_kbars import (
-    back_adjust_taifex_rollovers,
     clear_stale_shioaji_locks,
     fetch_minute_kbars,
     is_supported_interval,
     resample_kbars,
-    rollover_adjust_enabled,
     suppress_native_stdout,
 )
 from src.config.paths import get_runtime_root
@@ -387,12 +385,6 @@ def get_historical_bars(
         return {"status": "ok", "symbol": symbol, "period": period, "bars": []}
 
     is_futures = symbol.upper().endswith(".TWF")
-    if is_futures and rollover_adjust_enabled():
-        # Continuous-alias (R1/R2) rolls splice at 13:31 on settlement days;
-        # unadjusted windows spanning a roll distort indicator math. Recent
-        # bars (after the last roll) keep factor 1.0, so comparisons against
-        # live quotes still line up. No-op for dated contracts.
-        minute_df = back_adjust_taifex_rollovers(minute_df, symbol.split(".")[0])
     bars_df = resample_kbars(minute_df, period, session_aware=is_futures).tail(int(limit))
     return {
         "status": "ok",

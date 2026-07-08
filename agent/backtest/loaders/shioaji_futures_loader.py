@@ -13,6 +13,10 @@ finlab fallback for futures prices -- ``FALLBACK_CHAINS["tw_futures"]`` is
 
 Historical futures coverage on Shioaji starts 2020-03-22. Market-data
 timestamps are already Taiwan wall-clock time -- do not add +8h.
+
+Continuous-alias symbols (``TXFR1.TWF``/``MXFR2.TWF``, etc.) are served
+raw, exactly as Shioaji's own R1/R2 kbars history splices them at each
+contract roll -- no back-adjustment is applied.
 """
 
 from __future__ import annotations
@@ -25,12 +29,10 @@ import pandas as pd
 
 from backtest.loaders._shioaji_kbars import (
     FETCH_WORKERS,
-    back_adjust_taifex_rollovers,
     clear_stale_shioaji_locks,
     fetch_minute_kbars_cached,
     is_supported_interval,
     resample_kbars,
-    rollover_adjust_enabled,
     suppress_native_stdout,
 )
 from backtest.loaders.base import validate_date_range, validate_ohlc
@@ -180,11 +182,6 @@ class DataLoader:
         )
         if minute_df.empty:
             return None
-
-        # Applied to the frame SERVED from the cache, never persisted into
-        # it -- adjustment factors change with every future roll.
-        if rollover_adjust_enabled():
-            minute_df = back_adjust_taifex_rollovers(minute_df, code)
 
         bars = resample_kbars(minute_df, interval, session_aware=True)
         bars = validate_ohlc(bars)
