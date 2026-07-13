@@ -226,6 +226,41 @@ def test_mcp_server_happy_path() -> None:
         assert isinstance(delta, (int, float)) and 0.0 <= delta <= 1.0, (
             f"expected call delta in [0, 1], got {delta!r} from {data!r}"
         )
+
+        # 4. prompts/list — the research_workflow orchestration prompt must
+        # be registered so MCP clients can pull the task-routing rules the
+        # built-in chat agent gets from its system prompt.
+        _send(proc, {"jsonrpc": "2.0", "id": 4, "method": "prompts/list"})
+        resp, info = _wait_for_id(q, 4, CALL_TIMEOUT)
+        assert resp is not None, (
+            f"prompts/list did not respond within {CALL_TIMEOUT}s (status={info})"
+        )
+        prompts = resp.get("result", {}).get("prompts") or []
+        prompt_names = {p["name"] for p in prompts}
+        assert "research_workflow" in prompt_names, (
+            f"research_workflow prompt missing from catalogue: {sorted(prompt_names)}"
+        )
+
+        # 5. prompts/get research_workflow — content must carry the two rules
+        # that historically broke MCP clients: the agent/runs/ path prefix
+        # asymmetry and the load_skill-first requirement.
+        _send(proc, {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "prompts/get",
+            "params": {"name": "research_workflow", "arguments": {}},
+        })
+        resp, info = _wait_for_id(q, 5, CALL_TIMEOUT)
+        assert resp is not None, (
+            f"prompts/get did not respond within {CALL_TIMEOUT}s (status={info})"
+        )
+        messages = resp.get("result", {}).get("messages") or []
+        assert messages, f"prompts/get returned no messages: {resp}"
+        prompt_text = messages[0].get("content", {}).get("text", "")
+        for needle in ("agent/runs/", "load_skill", "run_id"):
+            assert needle in prompt_text, (
+                f"research_workflow prompt is missing {needle!r}"
+            )
     finally:
         try:
             proc.kill()

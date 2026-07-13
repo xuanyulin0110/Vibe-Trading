@@ -17,6 +17,12 @@ trading-connector reads, swarm orchestration, trade-journal and shadow-account
 analysis. Every exposed tool is read-only or research-only; no order-placing or
 order-cancelling tool is ever surfaced via MCP.
 
+Also surfaces one MCP prompt, ``research_workflow`` — the task-routing and
+safety rules the built-in chat agent gets from its system prompt (backtest
+flow, path format asymmetry, run_id collision safety, post-backtest
+attribution). MCP clients should load it once at the start of a research
+session; in Claude Code it appears as /mcp__vibe-trading__research_workflow.
+
 Usage:
     python mcp_server.py                     # stdio transport (default)
     python mcp_server.py --transport http    # Streamable HTTP transport for network clients
@@ -175,6 +181,124 @@ def _risk_tier_from_text(value: str):
     if risk_tier is RiskTier.LIVE_TRADING_OR_EXECUTION:
         raise ValueError("live trading or execution goals are not supported")
     return risk_tier
+
+
+# ---------------------------------------------------------------------------
+# Workflow prompt — orchestration knowledge for MCP clients
+# ---------------------------------------------------------------------------
+
+# The built-in chat agent gets this task-routing knowledge from its system
+# prompt (src/agent/context.py). MCP clients only see tool schemas, so
+# without this prompt they skip skill loading, misformat run paths, and stop
+# at raw metrics. Keep this constant in sync with context.py when the
+# workflow rules there change.
+_RESEARCH_WORKFLOW_PROMPT = """\
+You are working through the vibe-trading MCP server. Follow these rules — they
+encode real incidents and verified tool behavior, not style preferences.
+
+## Golden rule: server-side filesystem
+
+`write_file` / `read_file` / `backtest` operate on the MCP server's
+filesystem, not yours. If you have your own shell or file tools, do NOT use
+them for strategy files — the backtest engine cannot see your local files.
+Never try to read skill files from a repo path either; call
+`load_skill(name)` to get the current version.
+
+## Path format asymmetry (verified behavior)
+
+| Tool | Path format | Example |
+|---|---|---|
+| `write_file(path, ...)` | WITH `agent/runs/` prefix | `agent/runs/my_run_20260712/config.json` |
+| `backtest(run_dir)` | WITH `agent/runs/` prefix | `agent/runs/my_run_20260712` |
+| `read_file(path)` | WITHOUT prefix — start at the run_id | `my_run_20260712/config.json` |
+
+Errors like "File not found or path escapes workspace" or "run_dir is
+required" usually mean a swapped prefix, not a missing file or broken tool.
+
+## run_id safety (real incident: a reused run_id overwrote a live
+paper-trading deployment's config and strategy code)
+
+1. Name run_ids specifically: `<symbol-or-strategy>_<yyyymmdd>`, never
+   `test` or `strategy1`.
+2. Before writing, probe with `read_file("<run_id>/config.json")` (no
+   prefix). If it returns content, PICK A DIFFERENT NAME.
+3. Without explicit user instruction to update an existing run_id, always
+   create a new one.
+4. `list_runs` / `get_run_result` / `retry_run` track SWARM research runs,
+   not backtest runs — they cannot list existing backtest run_ids.
+
+## Backtest workflow
+
+1. `load_skill("data-routing")` — pick the data source for this market.
+2. `load_skill("strategy-generate")` — the SignalEngine contract,
+   config.json schema, per-market extra_fields/fundamental_fields tables.
+   Follow it exactly.
+3. Choose a unique run_id (see safety rules above).
+4. `write_file("agent/runs/<run_id>/config.json", ...)` — if the strategy
+   should produce >= 10 trades, include
+   `"validation": {"monte_carlo": {"n_simulations": 1000}}`.
+5. `write_file("agent/runs/<run_id>/code/signal_engine.py", ...)`.
+6. `backtest(run_dir="agent/runs/<run_id>")` — the engine fetches data
+   itself; do not write your own runner script. Syntax errors surface in
+   the backtest error output (there is no separate syntax-check tool).
+7. `read_file("<run_id>/artifacts/metrics.csv")` — always report
+   total_return, sharpe, max_drawdown, trade_count.
+8. To iterate: `read_file` the current code, rewrite it fully in your
+   reasoning, `write_file` the whole file back (no partial-edit tool),
+   re-run `backtest`.
+
+## Post-backtest attribution (secondary to strategy correctness)
+
+Classify first — At-risk (Sharpe <= 0.5 or MaxDD >= 40%): run Layers 1+4,
+focus on failure diagnosis, `load_skill("backtest-diagnose")` if you suspect
+look-ahead or survivorship bias. Sub-optimal (Sharpe <= 1.0 or MaxDD >= 20%):
+run all four layers. Healthy: Layers 1+2.
+
+- Layer 1 — trade attribution from `<run_id>/artifacts/trades.csv` (exit
+  rows have pnl != 0): top-5 winners/losers, profitability after removing
+  top-5 winners, exit-reason breakdown, holding-period buckets
+  (<3 / 3-20 / >20 days).
+- Layer 2 — beta regression (if > 60 trading days): OLS of strategy daily
+  returns vs benchmark (A-shares 000300.SH, US SPY, crypto BTC-USDT);
+  report annualized alpha, beta, R-squared, alpha t-stat; warn if |t| < 2.
+- Layer 3 — regime analysis (if > 1 year and benchmark available):
+  `load_skill("correlation-analysis")`; flag if one regime drives > 60% of
+  profit.
+- Layer 4 — Monte Carlo (if `artifacts/validation.json` has `monte_carlo`):
+  report Sharpe and MaxDD p-values; warn if p > 0.05.
+
+Skip a layer with a one-line reason if its data is missing. Never fabricate
+data. Always name the strategy's primary risk.
+
+## Other workflows
+
+- Shadow Account: `load_skill("shadow-account")` MUST be the first call
+  before any shadow_* tool, no exceptions. Flow: analyze_trade_journal ->
+  extract_shadow_strategy (confirm rules with the user) ->
+  run_shadow_backtest -> render_shadow_report -> scan_shadow_signals
+  (research-only disclaimer).
+- Trade journal: `load_skill("trade-journal")` then
+  `analyze_trade_journal(file_path=..., analysis_type="full")`.
+- Swarm: only when the user explicitly asks for team/committee analysis
+  (needs an LLM key server-side). For "continue"-style follow-ups, reuse
+  the previous run_id instead of starting a new swarm.
+- Unsure about a symbol or market? `search_symbol` or ask the user — never
+  guess. `list_skills()` shows all 79 skills; load the relevant one before
+  starting any task.
+
+## Output conventions
+
+Use markdown pipe tables for any multi-row data. Use `##`/`###` headings,
+not `---` horizontal rules. Respond in the user's language.
+"""
+
+
+@mcp.prompt
+def research_workflow() -> str:
+    """Workflow guide for driving vibe-trading tools: backtest flow, path
+    format rules, run_id safety, post-backtest attribution, and skill-loading
+    requirements. Load this once at the start of a research session."""
+    return _RESEARCH_WORKFLOW_PROMPT
 
 
 # ---------------------------------------------------------------------------
