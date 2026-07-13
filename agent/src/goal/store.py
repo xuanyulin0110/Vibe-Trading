@@ -10,12 +10,13 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from functools import wraps
 from pathlib import Path
 from typing import Callable, TypeVar
 
+from src.config.accessor import get_env_config
 from src.goal.models import (
     AuditRow,
     EvidenceInput,
@@ -51,7 +52,7 @@ _COMPLETION_RESULTS = {
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _id(prefix: str) -> str:
@@ -70,7 +71,7 @@ def _json_loads(value: str | None, default: object) -> object:
 
 def _default_db_path() -> Path:
     """Return the configured goal ledger database path."""
-    raw_path = os.getenv(_DB_PATH_ENV, "").strip()
+    raw_path = get_env_config().paths.vibe_trading_goal_db_path.strip()
     if raw_path:
         return Path(raw_path).expanduser()
     return _DEFAULT_DB_PATH

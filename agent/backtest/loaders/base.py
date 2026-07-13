@@ -111,7 +111,7 @@ DEFAULT_MAX_RETRIES = 3
 
 def positive_env_int(name: str, default: int) -> int:
     """Read a positive integer env var, warning and falling back on invalid values."""
-    raw = os.getenv(name)
+    raw = os.getenv(name)  # noqa: env-gate — generic env var helper
     if raw is None or not raw.strip():
         return default
     try:
@@ -127,7 +127,7 @@ def positive_env_int(name: str, default: int) -> int:
 
 def positive_env_float(name: str, default: float) -> float:
     """Read a positive float env var, warning and falling back on invalid values."""
-    raw = os.getenv(name)
+    raw = os.getenv(name)  # noqa: env-gate — generic env var helper
     if raw is None or not raw.strip():
         return default
     try:
@@ -222,15 +222,28 @@ def retry_with_budget(
 # ---------------------------------------------------------------------------
 
 LOADER_CACHE_ENV = "VIBE_TRADING_DATA_CACHE"
+LOADER_CACHE_ROOT_ENV = "VIBE_TRADING_DATA_CACHE_ROOT"
 _LOADER_CACHE_TRUE_VALUES = {"1", "true", "yes", "on"}
 # Bump when the key payload or on-disk layout changes so stale entries are
 # simply never matched (old files become unreachable garbage, safe to delete).
-_LOADER_CACHE_VERSION = 2
+_LOADER_CACHE_VERSION = 3
 
 
 def loader_cache_enabled() -> bool:
     """Return whether the local market-data cache is explicitly enabled."""
-    return os.getenv(LOADER_CACHE_ENV, "").strip().lower() in _LOADER_CACHE_TRUE_VALUES
+    from src.config.accessor import get_env_config
+
+    return get_env_config().data.vibe_trading_data_cache
+
+
+def loader_cache_root() -> Path:
+    """Return the root directory for opt-in loader cache files."""
+    from src.config.accessor import get_env_config
+
+    root = get_env_config().data.vibe_trading_data_cache_root
+    if root and root.strip():
+        return Path(root).expanduser()
+    return Path.home() / ".vibe-trading" / "cache" / "loaders"
 
 
 def make_loader_cache_key(
@@ -274,7 +287,7 @@ def loader_cache_path(
         fields=fields,
     )
     source_dir = _sanitize_cache_segment(source)
-    return Path.home() / ".vibe-trading" / "cache" / "loaders" / source_dir / f"{key}.parquet"
+    return loader_cache_root() / source_dir / f"{key}.parquet"
 
 
 def loader_cache_range_is_final(end_date: str) -> bool:

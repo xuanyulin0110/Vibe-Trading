@@ -25,7 +25,6 @@ shape. The ticker->CIK table is fetched once per process and memoized.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from typing import Any, Dict, Optional
 
@@ -64,7 +63,9 @@ def _min_interval() -> float:
 
 def _user_agent() -> str:
     """Return the compliant contact UA, honoring the ``VIBE_TRADING_SEC_UA`` override."""
-    override = os.getenv(_UA_ENV)
+    from src.config.accessor import get_env_config
+
+    override = get_env_config().data.vibe_trading_sec_ua
     if override and override.strip():
         return override.strip()
     return _DEFAULT_SEC_UA

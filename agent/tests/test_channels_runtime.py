@@ -13,6 +13,7 @@ from src.channels.bus.events import InboundMessage, OutboundMessage
 from src.channels.bus.queue import MessageBus
 from src.channels.manager import ChannelManager
 from src.channels.registry import discover_channel_names, inspect_channels
+from src.config.schema import ChannelsConfig
 from src.channelsui.cli_apps_api import normalize_cli_app_mentions
 from src.channelsui.gateway_services import build_gateway_services
 from src.channelsui.mcp_presets_api import normalize_mcp_preset_mentions
@@ -116,11 +117,29 @@ def test_registry_reports_all_built_in_channels_with_dependency_recovery() -> No
     assert all(item["install_hint"].startswith("pip install") for item in missing)
 
 
+def test_registry_ignores_global_channel_settings() -> None:
+    statuses = inspect_channels(
+        ChannelsConfig.model_validate(
+            {
+                "replyTimeoutS": 120,
+                "sendMaxRetries": 1,
+                "telegram": {"enabled": True},
+            }
+        )
+    )
+
+    assert "telegram" in statuses
+    assert "reply_timeout_s" not in statuses
+    assert "send_max_retries" not in statuses
+    assert "model_dump" not in statuses
+
+
 def test_channel_manager_status_includes_every_configured_adapter() -> None:
     bus = MessageBus()
     manager = ChannelManager(
         {
             "send_max_retries": 1,
+            "reply_timeout_s": 600.0,
             "websocket": {"enabled": True, "host": "127.0.0.1", "port": 0, "allow_from": ["*"]},
             "telegram": {"enabled": False},
             "slack": {"enabled": True},
@@ -130,6 +149,8 @@ def test_channel_manager_status_includes_every_configured_adapter() -> None:
 
     status = manager.get_status()
 
+    assert "send_max_retries" not in status
+    assert "reply_timeout_s" not in status
     assert status["websocket"]["loaded"] is True
     assert status["websocket"]["enabled"] is True
     assert status["telegram"]["configured"] is True
@@ -288,7 +309,7 @@ def test_channel_runtime_handles_pairing_commands_without_agent(tmp_path: Path, 
                     channel="telegram",
                     sender_id="owner",
                     chat_id="chat-1",
-                    content="/pairing list",
+                    content="/PAIRING LIST",
                 )
             )
             outbound = await asyncio.wait_for(bus.consume_outbound(), timeout=1)
@@ -300,5 +321,192 @@ def test_channel_runtime_handles_pairing_commands_without_agent(tmp_path: Path, 
         assert outbound.chat_id == "chat-1"
         assert "No pending pairing requests" in outbound.content
         assert outbound.metadata["_pairing_command"] is True
+
+    asyncio.run(scenario())
+
+
+def test_channel_runtime_new_command_resets_session_and_creates_fresh_one(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        from src.channels.runtime import ChannelRuntime
+
+        bus = MessageBus()
+        service = FakeSessionService()
+        runtime = ChannelRuntime(
+            bus=bus,
+            session_service=service,
+            manager=None,
+            session_map_path=tmp_path / "channel_sessions.json",
+            reply_timeout_s=1,
+            poll_interval_s=0.01,
+        )
+        await runtime.start(start_manager=False)
+        try:
+            await bus.publish_inbound(
+                InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="hello")
+            )
+            reply1 = await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+            assert reply1.metadata["session_id"] == "session-1"
+
+            await bus.publish_inbound(
+                InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="/new")
+            )
+            reset_reply = await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+            assert "Session reset" in reset_reply.content
+            assert reset_reply.metadata.get("session_reset") is True
+
+            await bus.publish_inbound(
+                InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="after reset")
+            )
+            reply2 = await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+            assert reply2.metadata["session_id"] == "session-2"
+        finally:
+            await runtime.stop()
+
+        assert service.sent == [("session-1", "hello"), ("session-2", "after reset")]
+
+    asyncio.run(scenario())
+
+
+def test_channel_runtime_new_command_with_no_existing_session(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        from src.channels.runtime import ChannelRuntime
+
+        bus = MessageBus()
+        service = FakeSessionService()
+        runtime = ChannelRuntime(
+            bus=bus,
+            session_service=service,
+            manager=None,
+            session_map_path=tmp_path / "channel_sessions.json",
+            reply_timeout_s=1,
+            poll_interval_s=0.01,
+        )
+        await runtime.start(start_manager=False)
+        try:
+            await bus.publish_inbound(
+                InboundMessage(channel="telegram", sender_id="u1", chat_id="c1", content="/new")
+            )
+            reply = await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+        finally:
+            await runtime.stop()
+
+        assert "No active session to reset" in reply.content
+        assert reply.metadata.get("session_reset") is True
+        assert service.sent == []
+        assert len(service.created) == 0
+
+    asyncio.run(scenario())
+
+
+def test_channel_runtime_reset_and_newsession_aliases_work(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        from src.channels.runtime import ChannelRuntime
+
+        bus = MessageBus()
+        service = FakeSessionService()
+        runtime = ChannelRuntime(
+            bus=bus,
+            session_service=service,
+            manager=None,
+            session_map_path=tmp_path / "channel_sessions.json",
+            reply_timeout_s=1,
+            poll_interval_s=0.01,
+        )
+        await runtime.start(start_manager=False)
+        try:
+            await bus.publish_inbound(
+                InboundMessage(channel="discord", sender_id="u1", chat_id="c1", content="hi")
+            )
+            await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+
+            await bus.publish_inbound(
+                InboundMessage(channel="discord", sender_id="u1", chat_id="c1", content="/reset")
+            )
+            reply = await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+            assert "Session reset" in reply.content
+
+            await bus.publish_inbound(
+                InboundMessage(channel="discord", sender_id="u1", chat_id="c1", content="hi again")
+            )
+            await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+
+            await bus.publish_inbound(
+                InboundMessage(channel="discord", sender_id="u1", chat_id="c1", content="/newsession")
+            )
+            reply2 = await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+            assert "Session reset" in reply2.content
+        finally:
+            await runtime.stop()
+
+    asyncio.run(scenario())
+
+
+def test_channel_runtime_regular_messages_not_intercepted_as_new_session(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        from src.channels.runtime import ChannelRuntime
+
+        bus = MessageBus()
+        service = FakeSessionService()
+        runtime = ChannelRuntime(
+            bus=bus,
+            session_service=service,
+            manager=None,
+            session_map_path=tmp_path / "channel_sessions.json",
+            reply_timeout_s=1,
+            poll_interval_s=0.01,
+        )
+        await runtime.start(start_manager=False)
+        try:
+            for text in ["hello /new world", "/new stuff", "/NEW YORK", "type /new to reset"]:
+                await bus.publish_inbound(
+                    InboundMessage(channel="slack", sender_id="u1", chat_id="c1", content=text)
+                )
+                reply = await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+                assert reply.metadata.get("session_reset") is not True
+                assert "agent reply:" in reply.content
+        finally:
+            await runtime.stop()
+
+        assert len(service.sent) == 4
+
+    asyncio.run(scenario())
+
+
+def test_channel_runtime_session_map_persisted_after_reset(tmp_path: Path) -> None:
+    import json
+
+    async def scenario() -> None:
+        from src.channels.runtime import ChannelRuntime
+
+        map_path = tmp_path / "channel_sessions.json"
+        bus = MessageBus()
+        service = FakeSessionService()
+        runtime = ChannelRuntime(
+            bus=bus,
+            session_service=service,
+            manager=None,
+            session_map_path=map_path,
+            reply_timeout_s=1,
+            poll_interval_s=0.01,
+        )
+        await runtime.start(start_manager=False)
+        try:
+            await bus.publish_inbound(
+                InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="hi")
+            )
+            await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+
+            data = json.loads(map_path.read_text(encoding="utf-8"))
+            assert data["feishu:c1"] == "session-1"
+
+            await bus.publish_inbound(
+                InboundMessage(channel="feishu", sender_id="u1", chat_id="c1", content="/new")
+            )
+            await asyncio.wait_for(bus.consume_outbound(), timeout=1)
+
+            data = json.loads(map_path.read_text(encoding="utf-8"))
+            assert "feishu:c1" not in data
+        finally:
+            await runtime.stop()
 
     asyncio.run(scenario())

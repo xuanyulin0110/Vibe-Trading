@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from typing import Dict, List, Optional
 
@@ -40,9 +41,22 @@ _CCXT_TIMEOUT_MS = positive_env_int("CCXT_TIMEOUT_MS", 15_000)
 _CCXT_FETCH_BUDGET_S = positive_env_float("CCXT_FETCH_BUDGET_S", 60.0)
 
 
+def _parse_ccxt_symbol(code: str) -> tuple[str, str]:
+    """Return the canonical CCXT symbol and instrument type for ``code``."""
+    normalized = code.strip().upper()
+    if normalized.endswith("-PERP"):
+        match = re.fullmatch(r"([A-Z0-9]+)-USDT-PERP", normalized)
+        if match is None:
+            raise ValueError(
+                "USD-M perpetual symbol must use BASE-USDT-PERP, e.g. BTC-USDT-PERP"
+            )
+        return f"{match.group(1)}/USDT:USDT", "swap"
+    return normalized.replace("-", "/"), "spot"
+
+
 def _first_proxy_env(*names: str) -> str:
     for name in names:
-        value = os.getenv(name, "").strip()
+        value = os.getenv(name, "").strip()  # noqa: env-gate — system proxy vars
         if value:
             return value
     return ""
@@ -81,10 +95,18 @@ class DataLoader:
     def __init__(self) -> None:
         pass
 
-    def _get_exchange(self):
-        """Create exchange instance."""
+    def _get_exchange(self, instrument_type: str = "spot"):
+        """Create an exchange instance for spot or Binance USD-M swaps."""
         import ccxt
-        exchange_id = os.getenv("CCXT_EXCHANGE", "binance").lower()
+        from src.config.accessor import get_env_config
+
+        exchange_id = get_env_config().data.ccxt_exchange.lower()
+        if instrument_type == "swap":
+            if exchange_id not in {"binance", "binanceusdm"}:
+                raise ValueError(
+                    "BASE-USDT-PERP currently requires CCXT_EXCHANGE=binance"
+                )
+            exchange_id = "binanceusdm"
         exchange_cls = getattr(ccxt, exchange_id, None)
         if exchange_cls is None:
             logger.warning("Unknown CCXT exchange %s, falling back to binance", exchange_id)
@@ -127,15 +149,27 @@ class DataLoader:
         # opens an exchange object.
         exchange_holder: Dict[str, object] = {}
 
-        def get_exchange():
-            if "exchange" not in exchange_holder:
-                exchange_holder["exchange"] = self._get_exchange()
-            return exchange_holder["exchange"]
+        def get_exchange(instrument_type: str):
+            if instrument_type not in exchange_holder:
+                exchange_holder[instrument_type] = self._get_exchange(instrument_type)
+            return exchange_holder[instrument_type]
 
         result: Dict[str, pd.DataFrame] = {}
         for code in codes:
+            instrument_type = "spot"
             try:
-                ccxt_symbol = code.replace("-", "/").upper()
+                ccxt_symbol, instrument_type = _parse_ccxt_symbol(code)
+                exchange = get_exchange(instrument_type)
+
+                def fetch_frame():
+                    if instrument_type == "swap":
+                        return self._fetch_perpetual(
+                            exchange, ccxt_symbol, timeframe, since_ms, end_ms
+                        )
+                    return self._fetch_one(
+                        exchange, ccxt_symbol, timeframe, since_ms, end_ms
+                    )
+
                 df = cached_loader_fetch(
                     source=self.name,
                     symbol=code,
@@ -143,19 +177,48 @@ class DataLoader:
                     start_date=start_date,
                     end_date=end_date,
                     fields=None,
-                    fetch=lambda ccxt_symbol=ccxt_symbol: self._fetch_one(
-                        get_exchange(), ccxt_symbol, timeframe, since_ms, end_ms
-                    ),
+                    fetch=fetch_frame,
                 )
                 if df is not None and not df.empty:
                     result[code] = df
             except Exception as exc:
+                if instrument_type == "swap" or code.strip().upper().endswith("-PERP"):
+                    raise
                 logger.warning("CCXT failed for %s: %s", code, exc)
+        return result
+
+    @classmethod
+    def _fetch_perpetual(
+        cls, exchange, symbol: str, timeframe: str, since_ms: int, end_ms: int,
+    ) -> pd.DataFrame:
+        """Fetch aligned trade-price and mark-price candles for one USD-M swap."""
+        trade = cls._fetch_one(exchange, symbol, timeframe, since_ms, end_ms)
+        mark = cls._fetch_one(
+            exchange,
+            symbol,
+            timeframe,
+            since_ms,
+            end_ms,
+            params={"price": "mark"},
+        )
+        if trade is None or mark is None or not trade.index.equals(mark.index):
+            raise ValueError(f"mark-price timestamps are incomplete or unsynchronized for {symbol}")
+
+        result = trade.copy()
+        result["execution_open"] = trade["open"]
+        for column in ("open", "high", "low", "close"):
+            result[f"mark_{column}"] = mark[column]
         return result
 
     @staticmethod
     def _fetch_one(
-        exchange, symbol: str, timeframe: str, since_ms: int, end_ms: int,
+        exchange,
+        symbol: str,
+        timeframe: str,
+        since_ms: int,
+        end_ms: int,
+        *,
+        params: dict[str, str] | None = None,
     ) -> Optional[pd.DataFrame]:
         """Paginated OHLCV fetch for one symbol."""
         import ccxt
@@ -171,8 +234,14 @@ class DataLoader:
             # ``ccxt.NetworkError`` covers RequestTimeout / DDoSProtection /
             # ExchangeNotAvailable — the transient family. Anything else
             # (e.g. ``ExchangeError`` for a bad symbol) is not retried.
+            def fetch_page():
+                kwargs = {"since": cursor, "limit": limit}
+                if params is not None:
+                    kwargs["params"] = params
+                return exchange.fetch_ohlcv(symbol, timeframe, **kwargs)
+
             ohlcv = retry_with_budget(
-                lambda: exchange.fetch_ohlcv(symbol, timeframe, since=cursor, limit=limit),
+                fetch_page,
                 transient=ccxt.NetworkError,
                 deadline=deadline,
                 label=label,

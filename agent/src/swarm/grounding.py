@@ -55,6 +55,8 @@ import re
 from datetime import date, timedelta
 from typing import Iterable
 
+from src.config.accessor import get_env_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -143,17 +145,7 @@ def extract_symbols_from_user_vars(user_vars: dict[str, str]) -> list[str]:
 
 def max_grounding_symbols() -> int:
     """Return the configured cap for symbols fetched into worker prompts."""
-    raw = os.getenv(MAX_SYMBOLS_ENV, "").strip()
-    if not raw:
-        return DEFAULT_MAX_SYMBOLS
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning(
-            "grounding: invalid %s=%r, using default %d",
-            MAX_SYMBOLS_ENV, raw, DEFAULT_MAX_SYMBOLS,
-        )
-        return DEFAULT_MAX_SYMBOLS
+    value = get_env_config().swarm.swarm_grounding_max_symbols
     return max(1, value)
 
 

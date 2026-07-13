@@ -14,8 +14,13 @@ _UNSAFE_CHARS = re.compile(r"[/\\:*?\"<>|]")
 
 
 def get_media_dir(channel_name: str) -> Path:
-    """Return a media directory for *channel_name* under the VT data dir."""
-    p = get_data_dir() / channel_name
+    """Return a media directory for *channel_name* under the VT uploads root.
+
+    Inbound media must land inside ``~/.vibe-trading/uploads`` — one of the
+    default allowed file roots — so the agent's file-reading tools can open
+    what users send over IM channels without extra configuration (#465).
+    """
+    p = get_data_dir() / "uploads" / channel_name
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -146,11 +151,21 @@ def _is_allowed_loopback_target(
 
 
 def _is_private(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """Check whether *addr* is private, link-local, or loopback."""
-    if addr.is_loopback or addr.is_link_local or addr.is_private:
-        return True
-    # Also block well-known metadata endpoints
-    if isinstance(addr, ipaddress.IPv4Address):
-        return False
-    # IPv6: block unspecified, multicast, unique-local
-    return addr.is_multicast or addr.is_unspecified
+    """Check whether *addr* is non-globally-routable (private/internal/mesh).
+
+    ``addr.is_global`` is False for loopback, link-local, RFC 1918 private,
+    unspecified, reserved, and RFC 6598 shared address space
+    (``100.64.0.0/10`` — the default Tailscale/mesh range). The previous
+    explicit ``is_loopback | is_link_local | is_private`` checks missed the
+    100.64/10 block (``is_private`` is False for it), letting CGNAT/mesh hosts
+    slip past ``validate_url_target`` and be fetched as channel media. Using
+    ``not addr.is_global`` blocks every non-globally-routable range uniformly.
+    Multicast is added explicitly because ``is_global`` is True for multicast
+    addresses (both ``224.0.0.0/4`` and ``ff00::/8``); the old code only caught
+    IPv6 multicast, so this also closes an IPv4-multicast gap and matches
+    ``web_reader_tool._url_allowed``.
+
+    Loopback is still permitted when ``validate_url_target(allow_loopback=True)``
+    is called — that allowance is evaluated before this function runs.
+    """
+    return not addr.is_global or addr.is_multicast

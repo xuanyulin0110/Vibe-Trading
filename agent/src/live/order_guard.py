@@ -25,10 +25,10 @@ returned tool_result carries that redacted record under the frozen
 ``"live_action"`` key so the api_server SSE relay can emit a ``live.action``
 event without touching the agent loop.
 
-When the order is sized by ``quantity``, the gate derives a live quote (broker
-``get_quotes`` READ tool first, then the data loaders) and enforces the LARGER of
-the explicit notional and ``quantity`` × price — fail-closed DENY when no quote
-is obtainable — so the notional/exposure/leverage caps stay enforceable.
+When the order is sized by ``quantity``, the gate derives a live quote (the
+broker-specific quote READ tool first, then the data loaders) and enforces the
+LARGER of the explicit notional and ``quantity`` × price — fail-closed DENY when
+no quote is obtainable — so the notional/exposure/leverage caps stay enforceable.
 
 ``repeatable = False`` mirrors the no-retry stance in
 ``MCPServerAdapter._call_tool`` — a live order must never be silently re-issued.
@@ -42,6 +42,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from src.config.accessor import get_env_config
 from src.live.advisory import (
     AdvisoryContext,
     AdvisoryOrchestrator,
@@ -249,8 +250,8 @@ class LiveOrderGuardTool(MCPRemoteTool):
     def _quote_price(self, intent: OrderIntent) -> float | None:
         """Return a live USD price for the intent's symbol, fail-closed.
 
-        Prefers the broker's READ quote tool (``get_quotes``) so the price is
-        the broker's own; falls back to Vibe-Trading's data loaders
+        Prefers the broker's mapped READ quote tool so the price is the broker's
+        own; falls back to Vibe-Trading's data loaders
         (:func:`src.live.enforcement.last_price_usd`, standard auto-fallback)
         when the broker quote is unavailable. Returns ``None`` when no source
         yields a usable price.
@@ -276,8 +277,8 @@ class LiveOrderGuardTool(MCPRemoteTool):
     def _broker_quote_price(self, symbol: str) -> float | None:
         """Read a USD price for ``symbol`` from the broker's quote tool.
 
-        Calls the ungated read path (never the guard) for ``get_quotes`` with the
-        symbol argument and parses a price from the common envelope shapes.
+        Calls the ungated read path (never the guard) for the mapped quote tool
+        with the symbol argument and parses a price from the common envelope shapes.
         Returns ``None`` on any error envelope, missing field, or unparseable
         value — the caller then falls back to the data loaders.
 
@@ -390,8 +391,7 @@ class LiveOrderGuardTool(MCPRemoteTool):
         Never raises — all exceptions are caught and converted to
         REVIEW_UNAVAILABLE.
         """
-        env_val = os.getenv(_ADVISORY_ENABLED_ENV, "").strip().lower()
-        if env_val not in _ADVISORY_TRUTHY:
+        if not get_env_config().agent_tuning.vibe_trading_enable_advisory:
             return None
 
         providers = get_advisory_providers()

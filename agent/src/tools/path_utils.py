@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from src.config.accessor import get_env_config
+
 _ALLOWED_FILE_ROOTS_ENV = "VIBE_TRADING_ALLOWED_FILE_ROOTS"
 _ALLOWED_RUN_ROOTS_ENV = "VIBE_TRADING_ALLOWED_RUN_ROOTS"
 
@@ -68,7 +70,7 @@ def _agent_root() -> Path:
 
 def _configured_file_roots() -> list[Path]:
     """Return file roots configured through the environment."""
-    raw = os.getenv(_ALLOWED_FILE_ROOTS_ENV, "")
+    raw = get_env_config().api.vibe_trading_allowed_file_roots
     roots: list[Path] = []
     for item in raw.split(","):
         item = item.strip()
@@ -125,7 +127,7 @@ _ALLOWED_WRITE_ROOTS_ENV = "VIBE_TRADING_ALLOWED_WRITE_ROOTS"
 
 def allowed_write_roots() -> list[Path]:
     """Return all roots allowed for file writes and edits."""
-    raw = os.getenv(_ALLOWED_WRITE_ROOTS_ENV, "")
+    raw = get_env_config().api.vibe_trading_allowed_write_roots
     configured: list[Path] = []
     for item in raw.split(","):
         item = item.strip()
@@ -213,7 +215,7 @@ def resolve_safe_path(
 
 def _allowed_run_roots() -> list[Path]:
     """Return all roots allowed for run_dir-based tools."""
-    raw = os.getenv(_ALLOWED_RUN_ROOTS_ENV, "")
+    raw = get_env_config().api.vibe_trading_allowed_run_roots
     configured: list[Path] = []
     for item in raw.split(","):
         item = item.strip()

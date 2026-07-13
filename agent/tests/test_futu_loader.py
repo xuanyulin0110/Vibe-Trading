@@ -145,28 +145,44 @@ class TestNormalizeFrame:
 
 class TestIsAvailable:
     def test_false_when_host_missing(self, monkeypatch):
-        monkeypatch.delenv("FUTU_HOST", raising=False)
+        from src.config.accessor import reset_env_config
+
+        monkeypatch.setenv("FUTU_HOST", "")
         monkeypatch.setenv("FUTU_PORT", "11111")
+        reset_env_config()
         assert FutuLoader().is_available() is False
+        reset_env_config()
 
     def test_false_when_port_missing(self, monkeypatch):
+        from src.config.accessor import reset_env_config
+
         monkeypatch.setenv("FUTU_HOST", "127.0.0.1")
-        monkeypatch.delenv("FUTU_PORT", raising=False)
+        monkeypatch.setenv("FUTU_PORT", "0")
+        reset_env_config()
         assert FutuLoader().is_available() is False
+        reset_env_config()
 
     def test_true_when_connection_succeeds(self, monkeypatch):
+        from src.config.accessor import reset_env_config
+
         monkeypatch.setenv("FUTU_HOST", "127.0.0.1")
         monkeypatch.setenv("FUTU_PORT", "11111")
+        reset_env_config()
         mock_ctx = MagicMock()
         _futu_stub.OpenQuoteContext.return_value = mock_ctx
         assert FutuLoader().is_available() is True
         mock_ctx.close.assert_called_once()
+        reset_env_config()
 
     def test_false_when_connection_raises(self, monkeypatch):
+        from src.config.accessor import reset_env_config
+
         monkeypatch.setenv("FUTU_HOST", "127.0.0.1")
         monkeypatch.setenv("FUTU_PORT", "11111")
+        reset_env_config()
         _futu_stub.OpenQuoteContext.side_effect = OSError("connection refused")
         assert FutuLoader().is_available() is False
+        reset_env_config()
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,9 @@ _MARKET_PATTERNS = [
     (re.compile(r"^[A-Z]{2,4}[A-Z0-9]*\.TWF$", re.I), "tw_futures"),
     (re.compile(r"^[A-Z]+\.US$", re.I), "us_equity"),
     (re.compile(r"^\d{3,5}\.HK$", re.I), "hk_equity"),
+    # India equities: NSE (RELIANCE.NS) / BSE (500325.BO); tickers may carry
+    # '&' and '-' (e.g. M&M.NS, BAJAJ-AUTO.NS).
+    (re.compile(r"^[A-Z0-9&.\-]+\.(NS|BO)$", re.I), "india_equity"),
     (re.compile(r"^[A-Z]+-USDT$", re.I), "crypto"),
     (re.compile(r"^[A-Z]+/USDT$", re.I), "crypto"),
     # China futures: product+delivery.exchange (e.g. IF2406.CFFEX, rb2410.SHFE)

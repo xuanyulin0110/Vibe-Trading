@@ -19,7 +19,15 @@ from src.agent.tools import BaseTool
 logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL_SECONDS = 5
-_MAX_WAIT_SECONDS = int(os.getenv("SWARM_TIMEOUT", "1800"))
+
+
+def _max_wait_seconds() -> int:
+    import sys as _sys
+    _mod = _sys.modules.get(__name__)
+    if _mod is not None and "_MAX_WAIT_SECONDS" in _mod.__dict__:
+        return _mod.__dict__["_MAX_WAIT_SECONDS"]
+    from src.config.accessor import get_env_config
+    return get_env_config().swarm.swarm_timeout
 
 # Preset matching: (preset_name, keyword_patterns, weight_boost). Patterns match user intent (EN + ZH).
 _PRESET_KEYWORDS: list[tuple[str, list[str], float]] = [
@@ -231,6 +239,22 @@ _PRESET_KEYWORDS: list[tuple[str, list[str], float]] = [
             "cointegration",
             "配对",
             "统计套利",
+        ],
+        0.9,
+    ),
+    (
+        "value_investing_committee",
+        [
+            r"value\s+investing",
+            "价值投资",
+            r"\bbuffett\b",
+            "巴菲特",
+            r"\bmunger\b",
+            "芒格",
+            "段永平",
+            "李录",
+            "四大师",
+            r"four\s+master",
         ],
         0.9,
     ),
@@ -609,6 +633,7 @@ def _build_variables(preset_name: str, prompt: str) -> dict[str, str]:
         "geopolitical_war_room": {"crisis": g, "market": market},
         "pairs_research_lab": {"market": market, "sector": _extract_sector(prompt)},
         "investment_committee": {"target": g, "market": market},
+        "value_investing_committee": {"company": g, "market": market},
         "macro_strategy_forum": {"market": market, "horizon": "quarterly"},
         "statistical_arbitrage_desk": {"market": market, "goal": g, "sector": _extract_sector(prompt)},
         "sentiment_intelligence_team": {"market": market, "timeframe": "daily"},
@@ -722,9 +747,11 @@ class SwarmTool(BaseTool):
         # agent tool, the config path is resolved from disk / env, never from
         # the calling LLM's prompt (R-06).
         agent_config = load_swarm_agent_config()
+        from src.config.accessor import get_env_config
+
         runtime = SwarmRuntime(
             store=store,
-            max_workers=int(os.getenv("SWARM_MAX_WORKERS", "4")),
+            max_workers=get_env_config().swarm.swarm_max_workers,
             agent_config=agent_config,
         )
 
@@ -787,7 +814,8 @@ class SwarmTool(BaseTool):
         pending_live_events.clear()
 
         t0 = time.monotonic()
-        while time.monotonic() - t0 < _MAX_WAIT_SECONDS:
+        max_wait = _max_wait_seconds()
+        while time.monotonic() - t0 < max_wait:
             time.sleep(_POLL_INTERVAL_SECONDS)
 
             loaded = store.load_run(run_id)
@@ -813,7 +841,7 @@ class SwarmTool(BaseTool):
             )
 
         return json.dumps(
-            {"status": "timeout", "error": f"Swarm run {run_id} timed out after {_MAX_WAIT_SECONDS}s"},
+            {"status": "timeout", "error": f"Swarm run {run_id} timed out after {max_wait}s"},
             ensure_ascii=False,
         )
 
@@ -858,3 +886,9 @@ def _format_result(
         },
     }
     return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def __getattr__(name: str):
+    if name == "_MAX_WAIT_SECONDS":
+        return _max_wait_seconds()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -55,9 +55,9 @@ class _MockAdapter:
     def call_tool(
         self, remote_name: str, arguments: dict, *, local_name: str | None = None
     ) -> dict:
-        if remote_name in ("get_positions", "list_positions"):
+        if remote_name == "get_equity_positions":
             return {"positions": self._positions, "status": "ok"}
-        if remote_name in ("get_account", "get_balance", "get_buying_power"):
+        if remote_name == "get_portfolio":
             return {"equity": self._balance, "status": "ok"}
         self.order_calls.append({"remote": remote_name, "arguments": arguments})
         return {"status": "ok", "order_id": "rh_test_1", "state": "accepted"}
@@ -66,8 +66,8 @@ class _MockAdapter:
 def _spec() -> MCPRemoteToolSpec:
     return MCPRemoteToolSpec(
         server_name="robinhood",
-        remote_name="place_order",
-        local_name="mcp_robinhood_place_order",
+        remote_name="place_equity_order",
+        local_name="mcp_robinhood_place_equity_order",
         description="Place an order.",
         parameters={
             "type": "object",

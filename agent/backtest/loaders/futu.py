@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -94,12 +93,18 @@ class FutuLoader:
     requires_auth = True
 
     def __init__(self) -> None:
-        self._host = os.environ.get("FUTU_HOST", "127.0.0.1")
-        self._port = int(os.environ.get("FUTU_PORT", "11111"))
+        from src.config.accessor import get_env_config
+
+        cfg = get_env_config().data
+        self._host = cfg.futu_host
+        self._port = cfg.futu_port
 
     def is_available(self) -> bool:
-        """Return True if env vars are set and FutuOpenD is reachable."""
-        if not os.environ.get("FUTU_HOST") or not os.environ.get("FUTU_PORT"):
+        """Return True if FutuOpenD is reachable."""
+        from src.config.accessor import get_env_config
+
+        cfg = get_env_config().data
+        if not cfg.futu_host or not cfg.futu_port:
             return False
         try:
             import futu  # noqa: PLC0415

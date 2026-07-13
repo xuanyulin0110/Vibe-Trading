@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v0.1.10"
+    "version": "v0.1.11"
   },
   "layout": {
     "home": "الرئيسية",
@@ -125,7 +125,8 @@
       "docWebResearch": "بحث المستندات والويب",
       "tradeJournal": "يومية التداول",
       "tradingConnectors": "موصلات التداول",
-      "shadowAccount": "الحساب الظلّي"
+      "shadowAccount": "الحساب الظلّي",
+      "valueInvesting": "استثمار القيمة"
     },
     "examples": {
       "crossMarketPortfolio": "تحسين محفظة أسهم A",
@@ -138,6 +139,18 @@
       "multiFactorAlphaDesc": "تركيب عوامل مرجّحة بـ IC عبر 300 سهم",
       "optionsGreeks": "تحليل Greeks للخيارات",
       "optionsGreeksDesc": "تسعير Black-Scholes مع تحليل Delta/Gamma/Theta/Vega",
+      "valueCommittee": "لجنة استثمار القيمة",
+      "valueCommitteeDesc": "نقاش أربعة أساتذة حول سهم واحد: Buffett / Munger / Duan Yongping / Li Lu",
+      "valueCommitteePrompt": "استخدم run_swarm مع الإعداد المسبق value_investing_committee لتحليل Tencent (00700.HK): Buffett حول الخندق والسعر، Munger حول التفكير العكسي، Duan Yongping حول العمل والإدارة، Li Lu حول يقين 10 سنوات، ثم يلخّص الرئيس نقاط الاتفاق والتعارض",
+      "bottleneckHunter": "صياد اختناقات سلسلة الإمداد",
+      "bottleneckHunterDesc": "العثور على فائزين مخفيين في اختناقات Layer 2/3 داخل اتجاه فائق",
+      "bottleneckHunterPrompt": "استخدم مهارة bottleneck-hunter للعثور على فرص اختناق Layer 2/3 في بنية الذكاء الاصطناعي (البصريات / الليزر / ركائز InP)، قيّم كل اختناق واسرد الشركات المرشحة التي تجتاز بوابة التقييم",
+      "thesisTracker": "متتبع أطروحة الاستثمار",
+      "thesisTrackerDesc": "اكتب أطروحة من 5 جمل + خطوط حمراء + مراسي تقييم لحيازة",
+      "thesisTrackerPrompt": "استخدم مهارة thesis-tracker لبناء أطروحة استثمارية لـ Kweichow Moutai (600519.SH): أطروحة أساسية من 5 جمل، افتراضات قابلة للدحض، خطوط حمراء، ومراسي تقييم، مع التحقق عبر financial_rigor",
+      "valuationCheck": "فحص تقييم دقيق",
+      "valuationCheckDesc": "تحقق من PE / PB / ROE / القيمة السوقية بحساب عشري دقيق دون انجراف عائم",
+      "valuationCheckPrompt": "استخدم أداة financial_rigor للتحقق من تقييم Kweichow Moutai: السعر 1500، EPS 68.6، القيمة الدفترية للسهم 180 — احسب PE وPB وROE بدقة، ثم تقييمًا بثلاثة سيناريوهات (نمو 12%/8%/0%، PE 22/18/14، 3 سنوات)",
       "investmentCommittee": "مراجعة لجنة الاستثمار",
       "investmentCommitteeDesc": "نقاش متعدد الوكلاء: شراء مقابل بيع، مراجعة المخاطر، قرار مدير المحفظة",
       "quantStrategyDesk": "مكتب استراتيجية الكمّ",
@@ -308,6 +321,29 @@
     "sessionRuntime": "وقت تشغيل الجلسة",
     "flagsReadFrom": "تُقرأ الأعلام من {{env1}} و{{env2}} و{{env3}} في {{env_path}}."
   },
+  "qveris": {
+    "title": "سوق أدوات QVeris",
+    "subtitle": "أبقِ البيانات العامة المجانية كخيار افتراضي، وفعّل تنفيذ QVeris المدفوع عند الحاجة فقط.",
+    "enabled": "تفعيل مسار QVeris المدفوع",
+    "baseUrl": "Base URL",
+    "apiKey": "مفتاح API",
+    "apiKeyPlaceholder": "اتركه فارغًا للاحتفاظ بالمفتاح الحالي",
+    "mode": "الوضع",
+    "modeFree": "البيانات العامة المجانية فقط",
+    "modePaid": "تفعيل QVeris المدفوع",
+    "budget": "رصيد Credits لكل جلسة",
+    "budgetHint": "يتوقف التنفيذ المدفوع عند بلوغ ميزانية هذه الجلسة.",
+    "balance": "Credits المتبقية",
+    "recentUsage": "الاستخدام الأخير",
+    "noUsage": "لا يوجد استخدام حديث",
+    "signupCta": "فتح التسجيل",
+    "signupHint": "استخدم رمز الدعوة هذا عند إنشاء حساب QVeris.",
+    "inviteCode": "رمز الدعوة",
+    "save": "حفظ إعدادات QVeris",
+    "saved": "تم حفظ إعدادات QVeris",
+    "testFailed": "فشل طلب QVeris",
+    "notConfigured": "غير مكوّن"
+  },
   "agent": {
     "connectionLostReconnect": "فُقد الاتصال، جارٍ إعادة الاتصال…",
     "connectionRestored": "تمت استعادة الاتصال",
@@ -327,6 +363,10 @@
     "cancelGoal": "إلغاء الهدف",
     "describeGoal": "صف هدف البحث لإرفاقه بهذه الجلسة",
     "placeholder": "مثال: أنشئ استراتيجية تقاطع MA مزدوجة لـ 000001.SZ، واختبرها عكسيًا لعام 2024",
+    "send": "إرسال",
+    "messageInputLabel": "رسالة إلى الوكيل",
+    "inputHint": "Enter للإرسال · Shift+Enter لسطر جديد",
+    "editGoalObjectiveLabel": "تعديل هدف البحث",
     "exportChat": "تصدير المحادثة",
     "stopGeneration": "إيقاف التوليد",
     "runSwarmTeam": "تشغيل فريق السرب",
@@ -425,6 +465,7 @@
     "compareCol": "المقارنة",
     "delta": "الفرق",
     "selectTwoRuns": "اختر تشغيلين لمقارنة مقاييسهما.",
+    "loadError": "فشل تحميل بيانات التشغيل. يرجى المحاولة مرة أخرى.",
     "totalReturn": "العائد الإجمالي",
     "annualizedReturn": "العائد السنوي",
     "sharpeRatio": "نسبة Sharpe",
@@ -455,9 +496,9 @@
   },
   "alphaZoo": {
     "title": "Alpha Zoo",
-    "prebuiltAlpha": "{{count}} ألفا كمي مُعدّ مسبقًا عبر 4 مكتبات عوامل",
-    "prebuiltAlphaLoading": "ألفا كمي مُعدّ مسبقًا عبر 4 مكتبات عوامل",
-    "browseDesc": "تصفّح الإشارات العرضية المعتمدة على الصيغ من Qlib ومجموعة Kakushadze 101 وGTJA 191 وأدبيات الشذوذ الأكاديمي. انقر على أي ألفا لقراءة صيغتها وشفرتها المصدرية، أو نفّذ قياسًا لتسجيل مكتبة العوامل بأكملها على'universe وفترة محددة.",
+    "prebuiltAlpha": "{{count}} ألفا كمي مُعدّ مسبقًا عبر 5 مكتبات عوامل",
+    "prebuiltAlphaLoading": "ألفا كمي مُعدّ مسبقًا عبر 5 مكتبات عوامل",
+    "browseDesc": "تصفّح الإشارات العرضية المعتمدة على الصيغ من Qlib ومجموعة Kakushadze 101 وGTJA 191 وأدبيات الشذوذ الأكاديمي والعوامل الأساسية الآمنة PIT. انقر على أي ألفا لقراءة صيغتها وشفرتها المصدرية، أو نفّذ قياسًا لتسجيل مكتبة العوامل بأكملها على'universe وفترة محددة.",
     "search": "بحث",
     "searchPlaceholder": "تصفية حسب المعرّف أو الاسم المستعار…",
     "zoo": "مكتبة العوامل",
@@ -539,13 +580,15 @@
       "qlib158": "Qlib 158",
       "alpha101": "Kakushadze 101 ألفا صيغية",
       "gtja191": "GTJA 191",
-      "academic": "الشذوذات الأكاديمية"
+      "academic": "الشذوذات الأكاديمية",
+      "fundamental": "أساسيات آمنة PIT"
     },
     "zooCardDesc": {
       "qlib158": "مكتبة Microsoft Qlib الكاملة ذات 158 ميزة تغطي الزخم والتذبذب والحجم والإشارات الإحصائية المتحركة.",
       "alpha101": "101 إشارة ألفا صيغية من Kakushadze (2015)؛ إشارات عرضية قصيرة المدى.",
       "gtja191": "191 ألفا من Guotai Junan Securities؛ إشارات فنية وبنية مجهرية مضبوطة لأسواق الأسهم الصينية A.",
-      "academic": "شذوذات طويلة المدى منسقة من الأدبيات الأكاديمية (القيمة، الزخم، الجودة، التذبذب المنخفض، إلخ)."
+      "academic": "شذوذات طويلة المدى منسقة من الأدبيات الأكاديمية (القيمة، الزخم، الجودة، التذبذب المنخفض، إلخ).",
+      "fundamental": "عوامل الجودة والقيمة محسوبة من بيانات SEC company facts الآمنة PIT — earnings yield وROE وgross profitability وasset growth (مثبّتة على filed-date)."
     },
     "universeOption": {
       "csi300": "CSI 300 (الصين A)",
@@ -679,7 +722,11 @@
     "leverageValue": "{{value}}× رافعة",
     "tradesPerDay": "{{count}} صفقة/يوم",
     "adjustTitle": "تعديل هذا التفويض",
-    "adjustPlaceholder": "مثال: أبقِ هذا لكن ارفع الحد اليومي إلى 10"
+    "adjustPlaceholder": "مثال: أبقِ هذا لكن ارفع الحد اليومي إلى 10",
+    "adjustInputLabel": "محتوى طلب التعديل",
+    "confirmTitle": "تأكيد الالتزام بالتفويض",
+    "confirmDescription": "سيؤدي الالتزام إلى منح الوكيل صلاحية تداول فورية ضمن الحدود الموضحة أدناه.",
+    "confirmButton": "تأكيد والالتزام"
   },
   "messageBubble": {
     "copied": "تم النسخ",
@@ -711,7 +758,16 @@
     "featureStreaming": "بث في الوقت الفعلي",
     "featureStreamingDesc": "راقب الوكيل وهو يفكّر، ويستدعي الأدوات، ويتكرّر",
     "featureReplay": "إعادة تشغيل الاستراتيجية",
-    "featureReplayDesc": "محلّل يومية التداول + الحساب الظلّي — استخرج قواعدك، واختبرها عكسيًا، وأرجع فرق الأرباح والخسائر"
+    "featureReplayDesc": "محلّل يومية التداول + الحساب الظلّي — استخرج قواعدك، واختبرها عكسيًا، وأرجع فرق الأرباح والخسائر",
+    "howItWorksTitle": "كيف يعمل",
+    "step1Title": "1. صف استراتيجيتك",
+    "step1Desc": "أخبر الوكيل بما تريد اختباره بلغة طبيعية — دون الحاجة لكتابة أي كود.",
+    "step2Title": "2. راقب البحث والاختبار العكسي",
+    "step2Desc": "يخطط الوكيل، ويجلب بيانات السوق، وينفّذ الاختبار العكسي مباشرةً أمامك.",
+    "step3Title": "3. راجع النتائج",
+    "step3Desc": "اطّلع على مقاييس الأداء ومنحنى حقوق الملكية وشيفرة Pine Script القابلة للتصدير.",
+    "step4Title": "4. انتقل للتداول الفعلي عندما تكون جاهزًا",
+    "step4Desc": "يمكنك اختياريًا الموافقة على تفويض تداول بحدود واضحة — لن يُنفَّذ أي أمر دون تأكيدك."
   },
   "errorBoundary": {
     "somethingWrong": "حدث خطأ ما"

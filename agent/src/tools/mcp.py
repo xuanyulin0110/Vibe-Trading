@@ -16,9 +16,16 @@ from typing import Any, Awaitable, Callable, Coroutine, Iterable, Protocol, Type
 from fastmcp.client import Client
 from fastmcp.client.auth import OAuth
 from fastmcp.client.client import CallToolResult
-from fastmcp.client.transports.http import StreamableHttpTransport
-from fastmcp.client.transports.sse import SSETransport
-from fastmcp.client.transports.stdio import StdioTransport
+try:
+    from fastmcp.client.transports.http import StreamableHttpTransport
+    from fastmcp.client.transports.sse import SSETransport
+    from fastmcp.client.transports.stdio import StdioTransport
+except ModuleNotFoundError:
+    from fastmcp.client.transports import (
+        SSETransport,
+        StdioTransport,
+        StreamableHttpTransport,
+    )
 from fastmcp.exceptions import McpError, ToolError
 from key_value.aio.stores.filetree import FileTreeStore, FileTreeV1KeySanitizationStrategy
 from mcp import types as mcp_types

@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from src.config.accessor import get_env_config
 from src.config.schema import AgentConfig
 from src.swarm import grounding
 from src.swarm.models import (
@@ -124,8 +125,9 @@ class SwarmRuntime:
         # provider layer uses (src/providers/llm.py:136,195) — that way an
         # override applied via os.environ still shows up. Per-agent overrides
         # remain visible on SwarmAgentSpec.model_name.
-        run.provider = (os.getenv("LANGCHAIN_PROVIDER") or "").strip().lower() or None
-        run.model = (os.getenv("LANGCHAIN_MODEL_NAME") or "").strip() or None
+        _cfg = get_env_config()
+        run.provider = _cfg.llm.langchain_provider.strip().lower() or None
+        run.model = _cfg.llm.langchain_model_name.strip() or None
 
         self._store.create_run(run)
 
@@ -434,10 +436,7 @@ class SwarmRuntime:
                 ),
             )
 
-        try:
-            interval = float(os.getenv("SWARM_HEARTBEAT_INTERVAL_S", "3.0"))
-        except ValueError:
-            interval = 3.0
+        interval = get_env_config().swarm.swarm_heartbeat_interval_s
 
         try:
             with HeartbeatTimer(

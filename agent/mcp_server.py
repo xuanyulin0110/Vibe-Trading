@@ -87,7 +87,9 @@ _include_shell_tools = True
 
 def _env_shell_tools_enabled() -> bool:
     """Return whether shell tools were explicitly enabled for network MCP."""
-    return os.getenv("VIBE_TRADING_ENABLE_SHELL_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}
+    from src.config.accessor import get_env_config
+
+    return get_env_config().api.vibe_trading_enable_shell_tools
 
 
 def _get_skills_loader():

@@ -9,7 +9,9 @@ import pandas as pd
 import os
 
 # 读取环境变量中的token, 或者读取本地记录的token
-token = os.getenv('TUSHARE_TOKEN') or ts.get_token()
+from src.config.accessor import get_env_config
+
+token = get_env_config().data.tushare_token or ts.get_token()
 
 # 初始化pro接口
 pro = ts.pro_api(token)

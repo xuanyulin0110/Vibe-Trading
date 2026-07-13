@@ -19,7 +19,6 @@ Auth: set ``FMP_API_KEY`` in the environment. Covers US equities only.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -44,7 +43,9 @@ _OHLCV_FIELDS = ("open", "high", "low", "close", "volume")
 
 def _api_key() -> str:
     """Return the FMP API key from the environment, stripped (``""`` if unset)."""
-    return os.getenv(_API_KEY_ENV, "").strip()
+    from src.config.accessor import get_env_config
+
+    return get_env_config().data.fmp_api_key.strip()
 
 
 def _min_interval() -> float:

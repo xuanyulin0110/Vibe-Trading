@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v0.1.10"
+    "version": "v0.1.11"
   },
   "layout": {
     "home": "ホーム",
@@ -125,7 +125,8 @@
       "docWebResearch": "ドキュメント & Web リサーチ",
       "tradeJournal": "トレードジャーナル",
       "tradingConnectors": "トレーディングコネクタ",
-      "shadowAccount": "シャドウアカウント"
+      "shadowAccount": "シャドウアカウント",
+      "valueInvesting": "バリュー投資"
     },
     "examples": {
       "crossMarketPortfolio": "A株ポートフォリオ最適化",
@@ -138,6 +139,18 @@
       "multiFactorAlphaDesc": "300 銘柄に対する IC 重み付きファクター合成",
       "optionsGreeks": "オプション Greeks 分析",
       "optionsGreeksDesc": "Black-Scholes 価格モデルに基づく Delta/Gamma/Theta/Vega 分析",
+      "valueCommittee": "バリュー投資委員会",
+      "valueCommitteeDesc": "Buffett / Munger / Duan Yongping / Li Lu の4視点で1銘柄を討論",
+      "valueCommitteePrompt": "run_swarm で value_investing_committee プリセットを使い、Tencent (00700.HK) を分析してください: Buffett は moat と価格、Munger は反転思考、Duan Yongping は事業と経営陣、Li Lu は10年確度を評価し、議長が合意点と矛盾点を統合してください",
+      "bottleneckHunter": "サプライチェーン・ボトルネックハンター",
+      "bottleneckHunterDesc": "大きなトレンドの Layer 2/3 ボトルネックから隠れた勝者を探す",
+      "bottleneckHunterPrompt": "bottleneck-hunter スキルを使い、AI インフラ (光通信 / レーザー / InP 基板) の Layer 2/3 サプライチェーン・ボトルネック機会を探し、各ボトルネックを採点して、バリュエーションゲートを通過する候補企業を挙げてください",
+      "thesisTracker": "投資テーシス・トラッカー",
+      "thesisTrackerDesc": "保有銘柄に5文のテーシス、レッドライン、評価アンカーを作成",
+      "thesisTrackerPrompt": "thesis-tracker スキルを使い、Kweichow Moutai (600519.SH) の投資テーシスを作ってください: 5文の中核テーシス、反証可能な仮説、レッドライン、評価アンカーを financial_rigor で検証してください",
+      "valuationCheck": "精密バリュエーション検算",
+      "valuationCheckDesc": "厳密な十進演算で PE / PB / ROE / 時価総額を検証 (浮動小数点誤差なし)",
+      "valuationCheckPrompt": "financial_rigor ツールで Kweichow Moutai の評価を検証してください: 価格 1500、EPS 68.6、1株当たり純資産 180 から PE、PB、ROE を厳密に計算し、3年の3シナリオ評価 (成長率 12%/8%/0%、PE 22/18/14) も実行してください",
       "investmentCommittee": "投資委員会レビュー",
       "investmentCommitteeDesc": "マルチエージェント討論: ロング vs ショート、リスクレビュー、PM 決定",
       "quantStrategyDesk": "クォント戦略デスク",
@@ -308,6 +321,29 @@
     "sessionRuntime": "セッションランタイム",
     "flagsReadFrom": "フラグは {{env_path}} の {{env1}}、{{env2}}、{{env3}} から読み取られます。"
   },
+  "qveris": {
+    "title": "QVeris ツールマーケットプレイス",
+    "subtitle": "無料の公開データを既定のまま使い、必要なときだけ QVeris の有料実行を有効にします。",
+    "enabled": "QVeris 有料ルートを有効化",
+    "baseUrl": "Base URL",
+    "apiKey": "API キー",
+    "apiKeyPlaceholder": "空欄で現在のキーを保持",
+    "mode": "モード",
+    "modeFree": "無料公開データのみ",
+    "modePaid": "QVeris 有料を有効化",
+    "budget": "セッションごとの予算 Credits",
+    "budgetHint": "このセッション予算に達すると有料実行を停止します。",
+    "balance": "残り Credits",
+    "recentUsage": "最近の使用量",
+    "noUsage": "最近の使用量はありません",
+    "signupCta": "登録を開く",
+    "signupHint": "QVeris アカウント作成時にこの招待コードを使用してください。",
+    "inviteCode": "招待コード",
+    "save": "QVeris 設定を保存",
+    "saved": "QVeris 設定を保存しました",
+    "testFailed": "QVeris リクエストに失敗しました",
+    "notConfigured": "未設定"
+  },
   "agent": {
     "connectionLostReconnect": "接続が切断されました。再接続しています…",
     "connectionRestored": "接続が復元されました",
@@ -327,6 +363,10 @@
     "cancelGoal": "目標をキャンセル",
     "describeGoal": "このセッションに添付するリサーチ目標を記述してください",
     "placeholder": "例: 000001.SZ のデュアル MA クロスオーバー戦略を作成し、2024 年をバックテストする",
+    "send": "送信",
+    "messageInputLabel": "エージェントへのメッセージ",
+    "inputHint": "Enter で送信 · Shift+Enter で改行",
+    "editGoalObjectiveLabel": "リサーチ目標を編集",
     "exportChat": "チャットをエクスポート",
     "stopGeneration": "生成を停止",
     "runSwarmTeam": "Swarm チームを実行",
@@ -425,6 +465,7 @@
     "compareCol": "比較対象",
     "delta": "差分",
     "selectTwoRuns": "比較する 2 つの実行を選択してください。",
+    "loadError": "実行データの読み込みに失敗しました。もう一度お試しください。",
     "totalReturn": "トータルリターン",
     "annualizedReturn": "年率リターン",
     "sharpeRatio": "Sharpe レシオ",
@@ -455,9 +496,9 @@
   },
   "alphaZoo": {
     "title": "Alpha Zoo",
-    "prebuiltAlpha": "4 つの Zoo にまたがる {{count}} 個の事前構築クォント Alpha",
-    "prebuiltAlphaLoading": "4 つの Zoo にまたがる事前構築クォント Alpha",
-    "browseDesc": "Qlib、Kakushadze 101、GTJA 191、および学術的アノマリー文献から、フォーミュラ駆動のクロスセクションシグナルを参照できます。任意の Alpha をクリックして式とソースコードを読むか、ベンチを実行して特定のユニバースと期間で Zoo 全体をスコアリングできます。",
+    "prebuiltAlpha": "5 つの Zoo にまたがる {{count}} 個の事前構築クォント Alpha",
+    "prebuiltAlphaLoading": "5 つの Zoo にまたがる事前構築クォント Alpha",
+    "browseDesc": "Qlib、Kakushadze 101、GTJA 191、学術的アノマリー文献、および PIT セーフなファンダメンタルズから、フォーミュラ駆動のクロスセクションシグナルを参照できます。任意の Alpha をクリックして式とソースコードを読むか、ベンチを実行して特定のユニバースと期間で Zoo 全体をスコアリングできます。",
     "search": "検索",
     "searchPlaceholder": "ID またはニックネームで絞り込み…",
     "zoo": "Zoo",
@@ -539,13 +580,15 @@
       "qlib158": "Qlib 158",
       "alpha101": "Kakushadze 101 定式 Alpha",
       "gtja191": "GTJA 191",
-      "academic": "学術的アノマリー"
+      "academic": "学術的アノマリー",
+      "fundamental": "ファンダメンタル（PIT セーフ）"
     },
     "zooCardDesc": {
       "qlib158": "Microsoft Qlib の全 158 特徴ライブラリ。モメンタム、ボラティリティ、出来高、ローリング統計シグナルをカバー。",
       "alpha101": "Kakushadze (2015) の 101 個の定式 alpha シグナル。短期ホライゾンのクロスセクションシグナル。",
       "gtja191": "国泰君安証券の 191 個の Alpha。中国 A 株市場向けにチューニングされたテクニカルおよびマイクロストラクチャーシグナル。",
-      "academic": "学術文献からの長期ホライズンアノマリーのキュレーション (バリュー、モメンタム、クオリティ、低ボラティリティなど)。"
+      "academic": "学術文献からの長期ホライズンアノマリーのキュレーション (バリュー、モメンタム、クオリティ、低ボラティリティなど)。",
+      "fundamental": "PIT セーフな SEC company facts から算出される品質・バリュー系ファクター — earnings yield、ROE、gross profitability、asset growth（filed-date 基準）。"
     },
     "universeOption": {
       "csi300": "CSI 300 (中国 A 株)",
@@ -679,7 +722,11 @@
     "leverageValue": "{{value}}× レバレッジ",
     "tradesPerDay": "{{count}} トレード/日",
     "adjustTitle": "このマンデートを調整",
-    "adjustPlaceholder": "例: そのままにして日次上限を 10 に引き上げる"
+    "adjustPlaceholder": "例: そのままにして日次上限を 10 に引き上げる",
+    "adjustInputLabel": "調整リクエスト内容",
+    "confirmTitle": "マンデートのコミットを確認",
+    "confirmDescription": "コミットすると、以下の上限でエージェントに取引権限が即座に付与されます。",
+    "confirmButton": "確認してコミット"
   },
   "messageBubble": {
     "copied": "コピーしました",
@@ -711,7 +758,16 @@
     "featureStreaming": "リアルタイムストリーミング",
     "featureStreamingDesc": "エージェントの思考、ツール呼び出し、反復を観察",
     "featureReplay": "戦略リプレイ",
-    "featureReplayDesc": "トレードジャーナル分析 + シャドウアカウント — ルールを抽出しバックテスト、損益差分を要因分解"
+    "featureReplayDesc": "トレードジャーナル分析 + シャドウアカウント — ルールを抽出しバックテスト、損益差分を要因分解",
+    "howItWorksTitle": "使い方",
+    "step1Title": "1. 戦略を記述する",
+    "step1Desc": "コード不要。自然言語でテストしたい内容をエージェントに伝えるだけ。",
+    "step2Title": "2. リサーチとバックテストを見守る",
+    "step2Desc": "エージェントが計画を立て、市場データを取得し、バックテストをリアルタイムで実行します。",
+    "step3Title": "3. 結果を確認する",
+    "step3Desc": "パフォーマンス指標、エクイティカーブ、エクスポート可能な Pine Script を確認できます。",
+    "step4Title": "4. 準備ができたら本番へ",
+    "step4Desc": "上限を明示したトレーディングマンデートを任意で承認 — 確認なしに注文が入ることはありません。"
   },
   "errorBoundary": {
     "somethingWrong": "問題が発生しました"

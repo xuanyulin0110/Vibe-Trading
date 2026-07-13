@@ -23,6 +23,7 @@ from typing import Any
 
 from backtest.loaders._http import resolve_min_interval, throttled_get_json
 from src.agent.tools import BaseTool
+from src.config.accessor import get_env_config
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ class IWenCaiSearchTool(BaseTool):
             value; ``False`` otherwise, which silently excludes the tool from
             the registry. Never raises.
         """
-        return bool(os.getenv(_KEY_ENV))
+        return bool(get_env_config().data.vibe_trading_iwencai_key)
 
     description = (
         "Run a natural-language A-share research query against iWenCai (问财), a "
@@ -204,7 +205,7 @@ class IWenCaiSearchTool(BaseTool):
             "data": {"query": ..., "count": int, "results": [...]}}``. On
             failure: ``{"ok": false, "error": "..."}``.
         """
-        key = os.getenv(_KEY_ENV)
+        key = get_env_config().data.vibe_trading_iwencai_key or None
         if not key:
             return self._error(
                 f"iWenCai access key not configured; set {_KEY_ENV} to enable this tool"

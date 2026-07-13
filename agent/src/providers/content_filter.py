@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 
+from src.config.accessor import get_env_config
+
 CONTENT_FILTER_WARNING_THRESHOLD_ENV = "CONTENT_FILTER_WARNING_THRESHOLD"
 DEFAULT_CONTENT_FILTER_THRESHOLD = 0.05
 
@@ -67,14 +69,7 @@ def get_content_filter_threshold() -> float:
     Reads ``CONTENT_FILTER_WARNING_THRESHOLD`` (default 0.05 = 5%).
     Invalid values fall back to the default instead of crashing the run.
     """
-    raw = os.getenv(
-        CONTENT_FILTER_WARNING_THRESHOLD_ENV,
-        str(DEFAULT_CONTENT_FILTER_THRESHOLD),
-    )
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_CONTENT_FILTER_THRESHOLD
+    return get_env_config().agent_tuning.content_filter_warning_threshold
 
 
 def compute_content_filter_warnings(

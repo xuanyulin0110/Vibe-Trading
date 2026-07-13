@@ -16,7 +16,6 @@ and session reuse — Tiingo rate-limits by client and rejects unspaced bursts.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -51,7 +50,9 @@ def _resolve_key() -> str:
         The trimmed ``TIINGO_API_KEY`` value, or ``""`` when absent or a known
         placeholder.
     """
-    key = os.getenv(_AUTH_ENV, "").strip()
+    from src.config.accessor import get_env_config
+
+    key = get_env_config().data.tiingo_api_key.strip()
     return "" if key.lower() in _KEY_PLACEHOLDERS else key
 
 

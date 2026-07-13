@@ -84,8 +84,16 @@ const ZOO_CARDS: ZooCard[] = [
     title: "Academic Anomalies",
     description:
       "Curated long-horizon anomalies from the academic literature (value, momentum, quality, low-vol, etc.).",
-    approxCount: 6,
+    approxCount: 10,
     accent: "from-violet-500/20 to-violet-500/5",
+  },
+  {
+    id: "fundamental",
+    title: "PIT-Safe Fundamentals",
+    description:
+      "Quality and value factors computed from PIT-safe SEC company facts — earnings yield, ROE, gross profitability, asset growth (filed-date anchored).",
+    approxCount: 4,
+    accent: "from-rose-500/20 to-rose-500/5",
   },
 ];
 
@@ -690,7 +698,7 @@ function BenchView() {
         top: safeTop,
       });
       setJobId(res.job_id);
-      attachStream(res.job_id);
+      await attachStream(res.job_id);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to start bench";
       // BTC-USDT is single-asset — surface inline rather than as a toast,
@@ -707,9 +715,11 @@ function BenchView() {
     }
   };
 
-  const attachStream = (newJobId: string) => {
+  const attachStream = async (newJobId: string) => {
     setStatus("streaming");
-    const url = api.alphaBenchStreamUrl(newJobId);
+    // Mint a single-use SSE ticket, then open the stream with ?ticket= (the
+    // long-lived API key never goes in the URL).
+    const url = await api.alphaBenchStreamUrl(newJobId);
     const source = new EventSource(url);
     sourceRef.current = source;
 
@@ -1149,9 +1159,11 @@ function CompareView() {
     };
   }, []);
 
-  const attachStream = (newJobId: string) => {
+  const attachStream = async (newJobId: string) => {
     setStatus("streaming");
-    const source = new EventSource(api.alphaCompareStreamUrl(newJobId));
+    // Mint a single-use SSE ticket, then open the stream with ?ticket= (the
+    // long-lived API key never goes in the URL).
+    const source = new EventSource(await api.alphaCompareStreamUrl(newJobId));
     sourceRef.current = source;
 
     source.addEventListener("progress", (e) => {
@@ -1217,7 +1229,7 @@ function CompareView() {
         sort,
       });
       setJobId(res.job_id);
-      attachStream(res.job_id);
+      await attachStream(res.job_id);
     } catch (err: unknown) {
       const msg =
         err instanceof Error ? err.message : "Failed to start comparison";

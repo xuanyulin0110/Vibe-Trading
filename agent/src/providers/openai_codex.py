@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 from urllib.parse import urlparse
 
+from src.config.accessor import get_env_config
+
 try:
     import httpx
 except ImportError:
@@ -356,7 +358,7 @@ class OpenAICodexLLM:
         self.tools = tools or []
         self.reasoning_effort = reasoning_effort
         self.codex_url = validate_codex_base_url(
-            codex_url or os.getenv("OPENAI_CODEX_BASE_URL", DEFAULT_CODEX_URL)
+            codex_url or get_env_config().llm.openai_codex_base_url
         )
 
     def bind_tools(self, tools: list[dict[str, Any]]) -> "OpenAICodexLLM":

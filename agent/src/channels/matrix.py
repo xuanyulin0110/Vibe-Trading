@@ -51,7 +51,8 @@ except ImportError as e:
 from src.channels.bus.events import OutboundMessage
 from src.channels.bus.queue import MessageBus
 from src.channels.base import BaseChannel
-from src.channels.utils import get_media_dir
+from src.channels.utils import get_media_dir, get_runtime_subdir
+from src.config.paths import get_data_dir
 from pydantic import BaseModel
 from src.channels.utils import safe_filename
 from src.utils.logging_bridge import redirect_lib_logging
@@ -256,7 +257,16 @@ class MatrixChannel(BaseChannel):
         self._started_at_ms = int(time.time() * 1000)
         redirect_lib_logging("nio", level="WARNING")
 
-        self.store_path = get_media_dir("matrix") / "matrix-store"
+        # The nio E2E store + session.json hold credentials, so they live under
+        # the runtime dir (NOT the agent-readable uploads root that
+        # get_media_dir now returns). Deployments that already have a store at
+        # the pre-#465 location keep using it so E2E sessions survive.
+        legacy_store = get_data_dir() / "matrix" / "matrix-store"
+        self.store_path = (
+            legacy_store
+            if legacy_store.exists()
+            else get_runtime_subdir("matrix") / "matrix-store"
+        )
         self.store_path.mkdir(parents=True, exist_ok=True)
         self.session_path = self.store_path / "session.json"
 

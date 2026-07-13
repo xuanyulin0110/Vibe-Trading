@@ -312,7 +312,9 @@ class RSSHubEventProvider:
                 (an ``httpx.Client``-like). Injectable for offline testing.
             close_cutoff_hour: Knowable-date roll cutoff (0-23).
         """
-        resolved = (base_url if base_url is not None else os.getenv(RSSHUB_BASE_URL_ENV, "")).strip()
+        from src.config.accessor import get_env_config
+
+        resolved = (base_url if base_url is not None else get_env_config().data.rsshub_base_url).strip()
         self.base_url = resolved.rstrip("/")
         specs = tuple(feeds) if feeds is not None else DEFAULT_FEEDS
         self.feeds: dict[str, FeedSpec] = {spec.name: spec for spec in specs}

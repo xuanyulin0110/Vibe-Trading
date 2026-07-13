@@ -22,7 +22,6 @@ never aborts the batch.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -63,7 +62,9 @@ def _resolve_api_key() -> str:
     Returns:
         The trimmed key, or ``""`` when the env var is absent or a placeholder.
     """
-    key = os.getenv(_API_KEY_ENV, "").strip()
+    from src.config.accessor import get_env_config
+
+    key = get_env_config().data.alphavantage_api_key.strip()
     return "" if key in _API_KEY_PLACEHOLDERS else key
 
 

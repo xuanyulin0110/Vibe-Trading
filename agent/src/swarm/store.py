@@ -18,6 +18,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.config.accessor import get_env_config
+
 from src.swarm.models import SwarmEvent, SwarmRun
 from src.tools.redaction import redact_internal_paths
 
@@ -327,10 +329,7 @@ class SwarmStore:
         Returns:
             Seconds of event silence after which the run should be reaped.
         """
-        try:
-            interval = float(os.getenv("SWARM_HEARTBEAT_INTERVAL_S", "3.0"))
-        except ValueError:
-            interval = 3.0
+        interval = get_env_config().swarm.swarm_heartbeat_interval_s
         heartbeat_floor = max(60.0, interval * 10.0)
 
         agent_budgets = [

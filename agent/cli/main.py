@@ -2,8 +2,8 @@
 
 Responsibilities:
 
-1. Detect whether ``~/.vibe-trading/.env`` exists; if missing, run the
-   onboarding wizard (:mod:`cli.onboard`) before doing anything else.
+1. Detect whether any provider `.env` candidate exists; if all are missing, run
+   the onboarding wizard (:mod:`cli.onboard`) before doing anything else.
 2. Render the startup banner (:mod:`cli.intro`) on interactive entry.
 3. For interactive entry (no subcommand, or ``chat``) drive the REPL
    built on :mod:`cli.input`, :mod:`cli.completer`,
@@ -83,8 +83,23 @@ def _register_live_slash_commands() -> None:
 
 
 _register_live_slash_commands()
-
+# QVERIS-INTEGRATION
+def _register_data_slash_commands() -> None:  # QVERIS-INTEGRATION
+    """Surface data routing mode in the shared slash registry."""  # QVERIS-INTEGRATION
+    from cli.commands import slash_router  # QVERIS-INTEGRATION
+    if any(cmd.name == "data" for cmd in slash_router.SLASH_COMMANDS):  # QVERIS-INTEGRATION
+        return  # QVERIS-INTEGRATION
+    commands = list(slash_router.SLASH_COMMANDS)  # QVERIS-INTEGRATION
+    quit_idx = next((i for i, c in enumerate(commands) if c.name == "quit"), len(commands))  # QVERIS-INTEGRATION
+    commands.insert(quit_idx, slash_router.Command("data", "Data routing mode", "cli.main"))  # QVERIS-INTEGRATION
+    slash_router.SLASH_COMMANDS = tuple(commands)  # QVERIS-INTEGRATION
+# QVERIS-INTEGRATION
+_register_data_slash_commands()  # QVERIS-INTEGRATION
+# QVERIS-INTEGRATION
+_AGENT_DIR = Path(__file__).resolve().parents[1]
 _ENV_PATH = Path.home() / ".vibe-trading" / ".env"
+_PROJECT_ENV_PATH = _AGENT_DIR / ".env"
+_CWD_ENV_PATH = Path.cwd() / ".env"
 # Best-effort fallbacks used only when the probe genuinely fails (missing
 # dependency, broken install). The numbers track the actual bundled counts
 # so a probe failure still shows a plausible banner rather than "0 loaded".
@@ -105,13 +120,20 @@ _SESSION_STORE_CACHE: Any = None
 
 def _probe_model_name() -> str:
     """Return the configured LLM model id, or a placeholder."""
-    name = os.environ.get("LANGCHAIN_MODEL_NAME") or os.environ.get("OPENAI_MODEL")
+    from src.config.accessor import get_env_config
+
+    name = get_env_config().llm.langchain_model_name or get_env_config().llm.openai_model
     if name:
         return name
+    env_path = _first_existing_env_path()
+    if env_path is None:
+        return "unset (use /model to pick one)"
     try:
-        text = _ENV_PATH.read_text(encoding="utf-8")
+        text = env_path.read_text(encoding="utf-8")
         for line in text.splitlines():
             if line.startswith("LANGCHAIN_MODEL_NAME="):
+                return line.split("=", 1)[1].strip()
+            if line.startswith("OPENAI_MODEL="):
                 return line.split("=", 1)[1].strip()
     except OSError:
         pass
@@ -244,13 +266,13 @@ def _is_supported_chat_invocation(argv: Sequence[str]) -> bool:
 
 
 def _maybe_run_onboarding() -> bool:
-    """Run the first-launch wizard when ``.env`` is missing.
+    """Run the first-launch wizard when every provider ``.env`` candidate is missing.
 
     Returns:
         ``True`` if startup should proceed, ``False`` if the user cancelled
         the wizard cleanly.
     """
-    if _ENV_PATH.exists():
+    if _first_existing_env_path() is not None:
         return True
     console = get_console()
     written = run_onboarding(console=console)
@@ -264,6 +286,19 @@ def _maybe_run_onboarding() -> bool:
     except Exception:  # noqa: BLE001 — legacy will load again later
         pass
     return True
+
+
+def _env_candidates() -> tuple[Path, ...]:
+    """Return provider `.env` candidates in the same order as ``src.providers.llm``."""
+    return (_ENV_PATH, _PROJECT_ENV_PATH, _CWD_ENV_PATH)
+
+
+def _first_existing_env_path() -> Path | None:
+    """Return the first configured `.env` candidate that exists, if any."""
+    for path in _env_candidates():
+        if path.exists():
+            return path
+    return None
 
 
 def _show_banner() -> None:
@@ -436,7 +471,9 @@ def _maybe_resume_last_session(console: Any) -> Optional[Dict[str, Any]]:
 
     Returns:
         A dict ``{"session_id": str, "history": list[dict], "title": str}``
-        when the user opts to resume, otherwise ``None`` (new session).
+        when the user opts to resume, ``{"pending_input": str}`` when the
+        user typed a first chat turn into the prompt, otherwise ``None`` (new
+        session).
     """
     try:
         store = _session_store()
@@ -453,11 +490,14 @@ def _maybe_resume_last_session(console: Any) -> Optional[Dict[str, Any]]:
         f"[dim]Resume last session ({title})? (r)esume / (n)ew (default: new)[/dim]"
     )
     try:
-        choice = input("> ").strip().lower()
+        raw_choice = input("> ").strip()
     except (EOFError, KeyboardInterrupt):
         return None
-    if choice not in {"r", "resume", "y", "yes"}:
+    choice = raw_choice.lower()
+    if choice in {"", "n", "new", "no"}:
         return None
+    if choice not in {"r", "resume", "y", "yes"}:
+        return {"pending_input": raw_choice}
 
     return {
         "session_id": last.session_id,
@@ -880,8 +920,20 @@ def _run_connector_command_from_repl(console: Any, args: list[str]) -> None:
         _dispatch_connector(parsed)
     except Exception as exc:  # noqa: BLE001 — never let a connector command kill the loop
         console.print(f"[bold red]/connector failed:[/bold red] {exc}")
-
-
+# QVERIS-INTEGRATION
+def _run_data_command_from_repl(console: Any, args: list[str]) -> None:  # QVERIS-INTEGRATION
+    """Run a ``/data ...`` subcommand from the REPL via the CLI dispatcher."""  # QVERIS-INTEGRATION
+    from cli._legacy import _build_parser, _dispatch_data  # QVERIS-INTEGRATION
+    argv = ["data", *(args or ["status"])]  # QVERIS-INTEGRATION
+    try:  # QVERIS-INTEGRATION
+        parsed = _build_parser().parse_args(argv)  # QVERIS-INTEGRATION
+    except SystemExit:  # QVERIS-INTEGRATION
+        console.print("[dim]Usage: /data [status|mode free|mode paid|usage][/dim]")  # QVERIS-INTEGRATION
+        return  # QVERIS-INTEGRATION
+    try:  # QVERIS-INTEGRATION
+        _dispatch_data(parsed)  # QVERIS-INTEGRATION
+    except Exception as exc:  # noqa: BLE001  # QVERIS-INTEGRATION
+        console.print(f"[bold red]/data failed:[/bold red] {exc}")  # QVERIS-INTEGRATION
 def _is_numeric_pick(text: str) -> Optional[int]:
     """Return the chosen ordinal if ``text`` is a bare numeric pick, else None.
 
@@ -991,7 +1043,9 @@ def _commit_mandate(proposal: Dict[str, Any], selected_ordinal: int) -> Dict[str
     """
     import httpx
 
-    base = os.environ.get("VIBE_TRADING_API_URL", "http://127.0.0.1:8000").rstrip("/")
+    from src.config.accessor import get_env_config
+
+    base = get_env_config().api.vibe_trading_api_url.rstrip("/")
     body = {
         "proposal_id": proposal.get("proposal_id"),
         "selected_ordinal": selected_ordinal,
@@ -1074,6 +1128,7 @@ def _interactive_loop(max_iter: int, resume_session_id: Optional[str] = None) ->
     # the prompt appear only after the user presses Enter.
 
     ctx = InteractiveContext(max_iter=max_iter)
+    pending_input: Optional[str] = None
 
     if resume_session_id:
         # Resume a specific session by ID (``vibe-trading resume <session-id>``).
@@ -1095,11 +1150,14 @@ def _interactive_loop(max_iter: int, resume_session_id: Optional[str] = None) ->
         # Offer to resume the most recent session. Audit item 8.
         resume = _maybe_resume_last_session(console)
         if resume is not None:
-            ctx.session_id = resume["session_id"]
-            ctx.history = list(resume["history"])
-            console.print(
-                f"[dim]Resumed session: {resume['title']} ({len(ctx.history)} prior turns)[/dim]"
-            )
+            if "pending_input" in resume:
+                pending_input = str(resume["pending_input"])
+            else:
+                ctx.session_id = resume["session_id"]
+                ctx.history = list(resume["history"])
+                console.print(
+                    f"[dim]Resumed session: {resume['title']} ({len(ctx.history)} prior turns)[/dim]"
+                )
 
     # Build the prompt session once so history + completer persist.
     try:
@@ -1118,27 +1176,31 @@ def _interactive_loop(max_iter: int, resume_session_id: Optional[str] = None) ->
     session = make_session()
 
     while True:
-        _print_recap_if_needed(console, ctx)
-        try:
-            user_input = get_user_input(session=session)
-        except KeyboardInterrupt:
-            # Should not reach here — the keybinding raises EOFError instead.
-            continue
-        except EOFError:
-            # Two interpretations: Ctrl+D (always exit), or Ctrl+C on an
-            # empty line (show hint, exit on second press).
-            #
-            # ``ctrl_c_within_window`` reads a press-time decision cached
-            # by the keybinding: True iff the gap between the *previous*
-            # Ctrl+C press and *this* one is < 2 s. First press → False
-            # (no prior press) → we print the hint and continue. Second
-            # press inside the window → True → we break.
-            if ctrl_c_within_window(session, window_sec=2.0):
-                break
-            console.print(
-                "[dim]Press Ctrl+C again within 2s, Ctrl+D, or type /quit to exit[/dim]"
-            )
-            continue
+        if pending_input is not None:
+            user_input = pending_input
+            pending_input = None
+        else:
+            _print_recap_if_needed(console, ctx)
+            try:
+                user_input = get_user_input(session=session)
+            except KeyboardInterrupt:
+                # Should not reach here — the keybinding raises EOFError instead.
+                continue
+            except EOFError:
+                # Two interpretations: Ctrl+D (always exit), or Ctrl+C on an
+                # empty line (show hint, exit on second press).
+                #
+                # ``ctrl_c_within_window`` reads a press-time decision cached
+                # by the keybinding: True iff the gap between the *previous*
+                # Ctrl+C press and *this* one is < 2 s. First press → False
+                # (no prior press) → we print the hint and continue. Second
+                # press inside the window → True → we break.
+                if ctrl_c_within_window(session, window_sec=2.0):
+                    break
+                console.print(
+                    "[dim]Press Ctrl+C again within 2s, Ctrl+D, or type /quit to exit[/dim]"
+                )
+                continue
 
         text = user_input.strip()
         if not text:
@@ -1176,6 +1238,9 @@ def _interactive_loop(max_iter: int, resume_session_id: Optional[str] = None) ->
             if slash_name == "connector":
                 _run_connector_command_from_repl(console, slash_tokens[1:])
                 continue
+            if slash_name == "data":  # QVERIS-INTEGRATION
+                _run_data_command_from_repl(console, slash_tokens[1:])  # QVERIS-INTEGRATION
+                continue  # QVERIS-INTEGRATION
             rc = _dispatch_slash(text, ctx)
             if rc == 2:
                 break

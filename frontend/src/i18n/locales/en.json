@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v0.1.10"
+    "version": "v0.1.11"
   },
   "charts": {
     "noPriceData": "No price data",
@@ -130,7 +130,8 @@
       "docWebResearch": "Document & Web Research",
       "tradeJournal": "Trade Journal",
       "tradingConnectors": "Trading Connectors",
-      "shadowAccount": "Shadow Account"
+      "shadowAccount": "Shadow Account",
+      "valueInvesting": "Value Investing"
     },
     "examples": {
       "crossMarketPortfolio": "A-Share Portfolio Optimization",
@@ -148,6 +149,18 @@
       "optionsGreeks": "Options Greeks Analysis",
       "optionsGreeksDesc": "Black-Scholes pricing with Delta/Gamma/Theta/Vega",
       "optionsGreeksPrompt": "Calculate option Greeks using Black-Scholes: spot=100, strike=105, risk-free rate=3%, vol=25%, expiry=90 days, analyze Delta/Gamma/Theta/Vega",
+      "valueCommittee": "Value Investing Committee",
+      "valueCommitteeDesc": "Buffett / Munger / Duan Yongping / Li Lu — four-master debate on one stock",
+      "valueCommitteePrompt": "Use run_swarm with the value_investing_committee preset to analyze Tencent (00700.HK): Buffett on moat & price, Munger on inversion, Duan Yongping on business & management, Li Lu on 10-year certainty, then the chair synthesizes consensus and contradictions",
+      "bottleneckHunter": "Supply-Chain Bottleneck Hunter",
+      "bottleneckHunterDesc": "Find hidden Layer 2/3 choke-point winners in a super-trend",
+      "bottleneckHunterPrompt": "Use the bottleneck-hunter skill to find Layer 2/3 supply-chain bottleneck opportunities in AI infrastructure (optics / lasers / InP substrates), score each choke point and list candidate companies that pass the valuation gate",
+      "thesisTracker": "Investment Thesis Tracker",
+      "thesisTrackerDesc": "Write a 5-sentence thesis + red lines + valuation anchors for a holding",
+      "thesisTrackerPrompt": "Use the thesis-tracker skill to build an investment thesis for Kweichow Moutai (600519.SH): 5-sentence core thesis, falsifiable assumptions, red lines, and valuation anchors, verified with financial_rigor",
+      "valuationCheck": "Exact Valuation Check",
+      "valuationCheckDesc": "Verify PE / PB / ROE / market cap with exact decimal arithmetic (no float drift)",
+      "valuationCheckPrompt": "Use the financial_rigor tool to verify Kweichow Moutai's valuation: price 1500, EPS 68.6, book value per share 180 — compute PE, PB, ROE exactly, then a three-scenario valuation (growth 12%/8%/0%, PE 22/18/14, 3 years)",
       "investmentCommittee": "Investment Committee Review",
       "investmentCommitteeDesc": "Multi-agent debate: long vs short, risk review, PM decision",
       "investmentCommitteePrompt": "[Swarm Team Mode] Use the investment_committee preset to evaluate whether to go long or short on 600519.SH given current market conditions",
@@ -313,6 +326,29 @@
     "sessionRuntime": "Session Runtime",
     "flagsReadFrom": "Flags are read from {{env1}}, {{env2}}, and {{env3}} in {{env_path}}."
   },
+  "qveris": {
+    "title": "QVeris Tool Marketplace",
+    "subtitle": "Keep free public data as the default, or enable paid QVeris execution for specialized data tools.",
+    "enabled": "Enable paid QVeris route",
+    "baseUrl": "Base URL",
+    "apiKey": "API key",
+    "apiKeyPlaceholder": "Leave blank to keep the current key",
+    "mode": "Mode",
+    "modeFree": "Free public data only",
+    "modePaid": "Paid QVeris enabled",
+    "budget": "Budget credits per session",
+    "budgetHint": "Paid execution stops when this session budget is reached.",
+    "balance": "Remaining credits",
+    "recentUsage": "Recent usage",
+    "noUsage": "No recent usage",
+    "signupCta": "Open signup",
+    "signupHint": "Use this invitation code when creating your QVeris account.",
+    "inviteCode": "Invitation code",
+    "save": "Save QVeris settings",
+    "saved": "QVeris settings saved",
+    "testFailed": "QVeris request failed",
+    "notConfigured": "Not configured"
+  },
   "agent": {
     "connectionLostReconnect": "Connection lost, reconnecting…",
     "connectionRestored": "Connection restored",
@@ -332,6 +368,10 @@
     "cancelGoal": "Cancel goal",
     "describeGoal": "Describe the research goal to attach to this session",
     "placeholder": "e.g. Create a dual MA crossover strategy for 000001.SZ, backtest 2024",
+    "send": "Send message",
+    "messageInputLabel": "Message to the agent",
+    "inputHint": "Enter to send · Shift+Enter for a new line",
+    "editGoalObjectiveLabel": "Edit research goal objective",
     "exportChat": "Export chat",
     "stopGeneration": "Stop generation",
     "runSwarmTeam": "Run swarm team",
@@ -430,6 +470,7 @@
     "compareCol": "Compare",
     "delta": "Delta",
     "selectTwoRuns": "Select two runs to compare their metrics.",
+    "loadError": "Failed to load run data. Please try again.",
     "totalReturn": "Total Return",
     "annualizedReturn": "Annualized Return",
     "sharpeRatio": "Sharpe Ratio",
@@ -460,9 +501,9 @@
   },
   "alphaZoo": {
     "title": "Alpha Zoo",
-    "prebuiltAlpha": "{{count}} pre-built quant alphas across 4 zoos",
-    "prebuiltAlphaLoading": "Pre-built quant alphas across 4 zoos",
-    "browseDesc": "Browse formula-driven cross-sectional signals from Qlib, the Kakushadze 101 set, GTJA 191, and the academic anomaly literature. Click any alpha to read its formula and source code, or run a bench to score the whole zoo on a universe and period.",
+    "prebuiltAlpha": "{{count}} pre-built quant alphas across 5 families",
+    "prebuiltAlphaLoading": "Pre-built quant alphas across 5 families",
+    "browseDesc": "Browse formula-driven cross-sectional signals from Qlib, the Kakushadze 101 set, GTJA 191, the academic anomaly literature, and PIT-safe fundamentals. Click any alpha to read its formula and source code, or run a bench to score the whole zoo on a universe and period.",
     "search": "Search",
     "searchPlaceholder": "Filter by id or nickname…",
     "zoo": "Zoo",
@@ -544,13 +585,15 @@
       "qlib158": "Qlib 158",
       "alpha101": "Kakushadze 101 Formulaic Alphas",
       "gtja191": "GTJA 191",
-      "academic": "Academic Anomalies"
+      "academic": "Academic Anomalies",
+      "fundamental": "PIT-Safe Fundamentals"
     },
     "zooCardDesc": {
       "qlib158": "Microsoft Qlib's full 158-feature library covering momentum, volatility, volume and rolling statistical signals.",
       "alpha101": "The 101 formulaic alphas from Kakushadze (2015); short-horizon cross-sectional signals.",
       "gtja191": "Guotai Junan Securities' 191 alphas; technical and microstructure signals tuned to China A-share markets.",
-      "academic": "Curated long-horizon anomalies from the academic literature (value, momentum, quality, low-vol, etc.)."
+      "academic": "Curated long-horizon anomalies from the academic literature (value, momentum, quality, low-vol, etc.).",
+      "fundamental": "Quality and value factors computed from PIT-safe SEC company facts — earnings yield, ROE, gross profitability, asset growth (filed-date anchored)."
     },
     "universeOption": {
       "csi300": "CSI 300 (China A)",
@@ -684,7 +727,11 @@
     "leverageValue": "{{value}}× leverage",
     "tradesPerDay": "{{count}} trades/day",
     "adjustTitle": "Adjust this mandate",
-    "adjustPlaceholder": "e.g. keep this but raise the daily cap to 10"
+    "adjustPlaceholder": "e.g. keep this but raise the daily cap to 10",
+    "adjustInputLabel": "Adjustment request",
+    "confirmTitle": "Confirm mandate commit",
+    "confirmDescription": "This grants the agent trading authorization under the limits shown below and takes effect immediately.",
+    "confirmButton": "Confirm & commit"
   },
   "messageBubble": {
     "copied": "Copied",
@@ -716,7 +763,16 @@
     "featureStreaming": "Real-time Streaming",
     "featureStreamingDesc": "Watch the agent think, call tools, and iterate",
     "featureReplay": "Strategy Replay",
-    "featureReplayDesc": "Trade journal analyzer + Shadow Account — extract your rules, backtest them, attribute PnL delta"
+    "featureReplayDesc": "Trade journal analyzer + Shadow Account — extract your rules, backtest them, attribute PnL delta",
+    "howItWorksTitle": "How it works",
+    "step1Title": "1. Describe your strategy",
+    "step1Desc": "Tell the agent what you want to test, in plain language — no code required.",
+    "step2Title": "2. Watch it research and backtest",
+    "step2Desc": "The agent plans, pulls market data, and runs the backtest live, so you can follow every step.",
+    "step3Title": "3. Review the results",
+    "step3Desc": "See performance metrics, the equity curve, and exportable Pine Script for the strategy.",
+    "step4Title": "4. Go live when you're ready",
+    "step4Desc": "Optionally approve a trading mandate with explicit limits — nothing trades without your confirmation."
   },
   "errorBoundary": {
     "somethingWrong": "Something went wrong"

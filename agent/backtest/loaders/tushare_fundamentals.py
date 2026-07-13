@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -113,7 +112,11 @@ class TushareFundamentalProvider:
 
     def __init__(self, api: Any | None = None) -> None:
         if api is None:
-            token = os.getenv("TUSHARE_TOKEN", "").strip()
+            import tushare as ts
+
+            from src.config.accessor import get_env_config
+
+            token = get_env_config().data.tushare_token.strip()
             if token in TUSHARE_TOKEN_PLACEHOLDERS:
                 # Letting an empty/placeholder token reach ts.pro_api() prints
                 # a Chinese "please configure your token" notice straight to
@@ -121,8 +124,6 @@ class TushareFundamentalProvider:
                 # stdio caller (stdout must carry only JSON-RPC) and unhelpful
                 # for a CLI caller either way. Fail clean instead.
                 raise RuntimeError("TUSHARE_TOKEN is not configured")
-            import tushare as ts
-
             api = ts.pro_api(token)
         self.api = api
 

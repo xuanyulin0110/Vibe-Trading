@@ -14,7 +14,7 @@ from typing import Any
 from src.channels.bus.events import InboundMessage, OutboundMessage
 from src.channels.bus.queue import MessageBus
 from src.channels.manager import ChannelManager
-from src.channels.pairing import PAIRING_COMMAND_META_KEY, handle_pairing_command, is_pairing_command
+from src.channels.pairing import PAIRING_COMMAND_META_KEY, handle_pairing_command
 from src.config.paths import get_data_dir
 from src.session.models import Message, Session
 
@@ -107,8 +107,8 @@ class ChannelRuntime:
 
     async def _handle_inbound(self, msg: InboundMessage) -> None:
         try:
-            if is_pairing_command(msg.content):
-                reply = handle_pairing_command(msg.channel, msg.content.split(None, 1)[1] if " " in msg.content else "list")
+            if self._is_pairing_command(msg.content):
+                reply = handle_pairing_command(msg.channel, self._pairing_subcommand_text(msg.content))
                 await self.bus.publish_outbound(
                     OutboundMessage(
                         channel=msg.channel,
@@ -135,6 +135,22 @@ class ChannelRuntime:
                         content=reply,
                         buttons=buttons,
                         metadata={"_deploy_command": True},
+                    )
+                )
+                return
+
+            if self._is_new_session_command(msg.content):
+                old_id = self.reset_session(msg.session_key)
+                if old_id:
+                    reply = "✅ Session reset. Your next message will start a new conversation."
+                else:
+                    reply = "ℹ️ No active session to reset."
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=reply,
+                        metadata={"_channel_runtime": True, "session_reset": True},
                     )
                 )
                 return
@@ -221,6 +237,35 @@ class ChannelRuntime:
         tmp = self.session_map_path.with_suffix(self.session_map_path.suffix + ".tmp")
         tmp.write_text(json.dumps(self._session_map, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(self.session_map_path)
+
+    def reset_session(self, session_key: str) -> str | None:
+        """Remove a session mapping so the next message creates a fresh session.
+
+        Args:
+            session_key: The channel:chat_id key to reset.
+
+        Returns:
+            The removed session_id, or None if no mapping existed.
+        """
+        removed = self._session_map.pop(session_key, None)
+        if removed is not None:
+            self._save_session_map()
+        return removed
+
+    @staticmethod
+    def _is_pairing_command(content: str) -> bool:
+        stripped = content.strip().lower()
+        return stripped == "/pairing" or stripped.startswith("/pairing ")
+
+    @staticmethod
+    def _pairing_subcommand_text(content: str) -> str:
+        parts = content.strip().split(None, 1)
+        return parts[1] if len(parts) > 1 else "list"
+
+    @staticmethod
+    def _is_new_session_command(content: str) -> bool:
+        """Check if the message is a session reset command (/new, /reset, /newsession)."""
+        return content.strip().lower() in ("/new", "/reset", "/newsession")
 
 
 def _session_id(session: Session | dict[str, Any] | Any) -> str:

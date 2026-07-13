@@ -70,7 +70,29 @@ _MOONSHOT_CAPABILITIES = ProviderCapabilities(
     default_headers={"User-Agent": _KIMI_USER_AGENT},
 )
 
-_ZHIPU_CAPABILITIES = ProviderCapabilities("zhipu", "ZHIPU_API_KEY", "ZHIPU_BASE_URL")
+# Kimi for Coding subscription plan. Same wire behavior as Moonshot's open
+# platform, but with a distinct endpoint/model and key namespace.
+_KIMI_CODING_CAPABILITIES = ProviderCapabilities(
+    "kimi-coding",
+    "KIMI_CODING_API_KEY",
+    "KIMI_CODING_BASE_URL",
+    capture_reasoning=True,
+    send_reasoning_content=True,
+    normalize_assistant_content=True,
+    default_headers={"User-Agent": _KIMI_USER_AGENT},
+)
+
+# GLM thinking models (glm-4.5+/glm-5.x) stream the chain-of-thought as
+# ``reasoning_content`` with the final answer in ``content``. Capture the
+# reasoning like DeepSeek; do NOT replay it on assistant turns —
+# ``send_reasoning_content`` stays off until verified live against bigmodel
+# (DeepSeek rejects replayed reasoning; zhipu is unconfirmed). See #458.
+_ZHIPU_CAPABILITIES = ProviderCapabilities(
+    "zhipu",
+    "ZHIPU_API_KEY",
+    "ZHIPU_BASE_URL",
+    capture_reasoning=True,
+)
 
 _OPENAI_CODEX_CAPABILITIES = ProviderCapabilities("openai-codex", None, "OPENAI_CODEX_BASE_URL")
 
@@ -81,6 +103,16 @@ _PROVIDERS: dict[str, ProviderCapabilities] = {
         "openrouter",
         "OPENROUTER_API_KEY",
         "OPENROUTER_BASE_URL",
+        capture_reasoning=True,
+        openrouter_reasoning_body=True,
+    ),
+    # Requesty is an OpenAI-compatible LLM gateway using the same
+    # ``provider/model`` naming and the same opt-in ``extra_body.reasoning``
+    # request option as OpenRouter, so it shares OpenRouter's capability shape.
+    "requesty": ProviderCapabilities(
+        "requesty",
+        "REQUESTY_API_KEY",
+        "REQUESTY_BASE_URL",
         capture_reasoning=True,
         openrouter_reasoning_body=True,
     ),
@@ -104,12 +136,15 @@ _PROVIDERS: dict[str, ProviderCapabilities] = {
     "glm": _ZHIPU_CAPABILITIES,
     "moonshot": _MOONSHOT_CAPABILITIES,
     "kimi": _MOONSHOT_CAPABILITIES,
+    "kimi-coding": _KIMI_CODING_CAPABILITIES,
     "minimax": ProviderCapabilities("minimax", "MINIMAX_API_KEY", "MINIMAX_BASE_URL"),
     "mimo": ProviderCapabilities("mimo", "MIMO_API_KEY", "MIMO_BASE_URL"),
     "zai": ProviderCapabilities("zai", "ZAI_API_KEY", "ZAI_BASE_URL"),
     "ollama": ProviderCapabilities("ollama", None, "OLLAMA_BASE_URL"),
     "openai-codex": _OPENAI_CODEX_CAPABILITIES,
     "openai_codex": _OPENAI_CODEX_CAPABILITIES,
+    "opencode-zen": ProviderCapabilities("opencode-zen", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    "opencode-go": ProviderCapabilities("opencode-go", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
 }
 
 

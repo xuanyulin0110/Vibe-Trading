@@ -640,3 +640,62 @@ class TestFullBacktestRobustness:
         engine = ChinaAEngine({"initial_cash": 1_000_000})
         engine._execute_bars(dates, data_map, close_df, target_pos, valid_codes)
         assert len(engine.equity_snapshots) == 20
+
+
+# ---------------------------------------------------------------------------
+# 6. Validation artifact — write must not assume artifacts/ already exists
+# ---------------------------------------------------------------------------
+
+
+class TestValidationArtifactDir:
+    def test_validation_json_written_when_artifacts_dir_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """Enabling validation must not crash when run_dir/artifacts is absent.
+
+        The validation.json write (step 7) runs before _write_artifacts()
+        (step 8) creates run_dir/artifacts, so the write must create the
+        directory itself. Regression test for the FileNotFoundError hit when
+        run_dir has no pre-created artifacts/ (e.g. a swarm agent workspace).
+        """
+        dates = pd.bdate_range("2024-04-01", periods=3)
+        bars = pd.DataFrame(
+            {
+                "open": [10.0, 11.0, 12.0],
+                "high": [10.5, 11.5, 12.5],
+                "low": [9.5, 10.5, 11.5],
+                "close": [10.2, 11.2, 12.2],
+                "volume": [1000, 1100, 1200],
+            },
+            index=dates,
+        )
+
+        class FakeLoader:
+            def fetch(self, *args, **kwargs):
+                return {"000001.SZ": bars.copy()}
+
+        class SignalEngine:
+            def generate(self, data_map):
+                return {"000001.SZ": pd.Series(1.0, index=data_map["000001.SZ"].index)}
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        assert not (run_dir / "artifacts").exists()
+
+        engine = ChinaAEngine({"initial_cash": 1_000_000})
+        metrics = engine.run_backtest(
+            {
+                "codes": ["000001.SZ"],
+                "start_date": "2024-04-01",
+                "end_date": "2024-04-30",
+                "source": "tushare",
+                "initial_cash": 1_000_000,
+                "validation": {"bootstrap": {"n_bootstrap": 20, "seed": 1}},
+            },
+            FakeLoader(),
+            SignalEngine(),
+            run_dir,
+        )
+
+        assert "validation" in metrics
+        assert (run_dir / "artifacts" / "validation.json").exists()

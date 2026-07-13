@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from backtest.correlation import (
+    _normalize_symbol,
     _rolling_correlation_matrix,
     infer_market,
 )
@@ -34,6 +35,120 @@ class TestInferMarket:
     def test_hk_suffix_before_a_share_prefix(self):
         # .HK suffix should be checked before A-share numeric prefix checks
         assert infer_market("000001.HK") == "hk_equity"
+
+    def test_bare_hk_tickers_by_digit_length(self):
+        # HK codes are <=5 digits; A-share codes are exactly 6 digits. A bare
+        # short numeric code must classify as HK, not A-share / US.
+        assert infer_market("0700") == "hk_equity"   # 腾讯
+        assert infer_market("0005") == "hk_equity"   # 汇丰
+        assert infer_market("0001") == "hk_equity"   # 长和
+        assert infer_market("0388") == "hk_equity"   # 港交所
+        assert infer_market("3690") == "hk_equity"   # 美团
+        assert infer_market("9988") == "hk_equity"   # 阿里 (starts with 9)
+        assert infer_market("700") == "hk_equity"    # unpadded form
+
+    def test_bare_a_share_tickers_by_digit_length(self):
+        # Exactly-6-digit bare codes are A-share regardless of prefix.
+        assert infer_market("600000") == "a_share"   # 浦发银行 沪
+        assert infer_market("000001") == "a_share"   # 平安银行 深
+        assert infer_market("300750") == "a_share"   # 宁德时代 创业板
+        assert infer_market("688981") == "a_share"   # 中芯国际 科创板
+        assert infer_market("830799") == "a_share"   # 北交所
+        assert infer_market("399001") == "a_share"   # 深证成指
+
+    def test_explicit_suffix_always_wins(self):
+        assert infer_market("600519.SH") == "a_share"
+        assert infer_market("000001.SZ") == "a_share"
+        assert infer_market("830799.BJ") == "a_share"
+        assert infer_market("AAPL.US") == "us_equity"
+        assert infer_market("9988.HK") == "hk_equity"
+
+
+class TestNormalizeSymbol:
+    def test_bare_us_equity_gets_us_suffix(self):
+        # Regression: bare US tickers were passed to loaders that require the
+        # canonical ``.US`` form, so the correlation matrix fetched nothing.
+        assert _normalize_symbol("AAPL", "us_equity") == "AAPL.US"
+        assert _normalize_symbol("SPY", "us_equity") == "SPY.US"
+
+    def test_bare_a_share_gets_exchange_suffix(self):
+        assert _normalize_symbol("600000", "a_share") == "600000.SH"
+        assert _normalize_symbol("000001", "a_share") == "000001.SZ"
+        assert _normalize_symbol("300750", "a_share") == "300750.SZ"
+        assert _normalize_symbol("830799", "a_share") == "830799.BJ"
+
+    def test_already_suffixed_passes_through(self):
+        assert _normalize_symbol("AAPL.US", "us_equity") == "AAPL.US"
+        assert _normalize_symbol("600000.SH", "a_share") == "600000.SH"
+        assert _normalize_symbol("0700.HK", "hk_equity") == "0700.HK"
+
+    def test_crypto_passes_through(self):
+        assert _normalize_symbol("BTC-USDT", "crypto") == "BTC-USDT"
+        assert _normalize_symbol("ETH-USDT", "crypto") == "ETH-USDT"
+
+    def test_bare_hk_gets_hk_suffix(self):
+        assert _normalize_symbol("0700", "hk_equity") == "0700.HK"
+
+    def test_case_and_whitespace_normalized(self):
+        assert _normalize_symbol(" aapl ", "us_equity") == "AAPL.US"
+
+
+class TestFetchFallsThroughChain:
+    """A loader that is available but returns no data must not end the search.
+
+    Regression: HK codes silently vanished from the matrix whenever the first
+    loader in the market chain (eastmoney) hit a network error, even though
+    the next loader (yahoo) could serve the symbol.
+    """
+
+    @staticmethod
+    def _price_df(n=60):
+        dates = pd.date_range("2024-01-01", periods=n, freq="D")
+        rng = np.random.default_rng(7)
+        return pd.DataFrame(
+            {"close": np.cumsum(rng.standard_normal(n)) + 100},
+            index=pd.Index(dates, name="trade_date"),
+        )
+
+    def test_falls_through_to_next_loader_when_first_returns_empty(self, monkeypatch):
+        from backtest.loaders import registry
+        from backtest.correlation import compute_correlation_matrix
+
+        good_df = self._price_df()
+
+        class EmptyLoader:
+            name = "fake_empty"
+            markets = {"us_equity"}
+
+            def is_available(self):
+                return True
+
+            def fetch(self, codes, start_date, end_date, *, interval="1D", fields=None):
+                return {}  # available but serves nothing (e.g. network error)
+
+        class GoodLoader:
+            name = "fake_good"
+            markets = {"us_equity"}
+
+            def is_available(self):
+                return True
+
+            def fetch(self, codes, start_date, end_date, *, interval="1D", fields=None):
+                return {c: good_df.copy() for c in codes}
+
+        monkeypatch.setattr(registry, "_registered", True)
+        monkeypatch.setattr(
+            registry, "LOADER_REGISTRY",
+            {"fake_empty": EmptyLoader, "fake_good": GoodLoader},
+        )
+        monkeypatch.setattr(
+            registry, "FALLBACK_CHAINS",
+            {"us_equity": ["fake_empty", "fake_good"]},
+        )
+
+        result = compute_correlation_matrix(codes=["AAPL", "SPY"], days=30)
+        assert result["labels"] == ["AAPL", "SPY"]
+        assert result["matrix"][0][1] == pytest.approx(1.0)  # identical series
 
 
 class TestRollingCorrelationMatrix:

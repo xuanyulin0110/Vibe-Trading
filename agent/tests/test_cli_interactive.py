@@ -12,6 +12,8 @@ Covers:
 
 from __future__ import annotations
 
+import importlib
+from pathlib import Path
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -175,6 +177,80 @@ class TestMainRouting:
         monkeypatch.setattr("sys.stdout.isatty", lambda: True)
         for argv in (["chat", "extra"], ["chat", "foo", "bar"]):
             assert _is_interactive_invocation(argv) is False, argv
+
+    def test_onboarding_skips_when_project_env_exists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Interactive startup must accept the provider loader's project-local `.env`."""
+        cli_main = importlib.import_module("cli.main")
+
+        home_env = tmp_path / "home" / ".vibe-trading" / ".env"
+        project_env = tmp_path / "agent" / ".env"
+        cwd_env = tmp_path / "cwd" / ".env"
+        project_env.parent.mkdir(parents=True)
+        project_env.write_text("LANGCHAIN_PROVIDER=openai-codex\n", encoding="utf-8")
+
+        monkeypatch.setattr(cli_main, "_ENV_PATH", home_env)
+        monkeypatch.setattr(cli_main, "_PROJECT_ENV_PATH", project_env, raising=False)
+        monkeypatch.setattr(cli_main, "_CWD_ENV_PATH", cwd_env, raising=False)
+
+        def fail_onboarding(*args, **kwargs):  # noqa: ANN001
+            raise AssertionError("onboarding should not run when agent/.env exists")
+
+        monkeypatch.setattr(cli_main, "run_onboarding", fail_onboarding)
+
+        assert cli_main._maybe_run_onboarding() is True
+
+    def test_probe_model_name_reads_project_env_candidate(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The startup banner should show the same project-local model the loader uses."""
+        cli_main = importlib.import_module("cli.main")
+
+        home_env = tmp_path / "home" / ".vibe-trading" / ".env"
+        project_env = tmp_path / "agent" / ".env"
+        cwd_env = tmp_path / "cwd" / ".env"
+        project_env.parent.mkdir(parents=True)
+        project_env.write_text(
+            "LANGCHAIN_MODEL_NAME=openai-codex/gpt-5.4\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.delenv("LANGCHAIN_MODEL_NAME", raising=False)
+        monkeypatch.delenv("OPENAI_MODEL", raising=False)
+        monkeypatch.setattr(cli_main, "_ENV_PATH", home_env)
+        monkeypatch.setattr(cli_main, "_PROJECT_ENV_PATH", project_env, raising=False)
+        monkeypatch.setattr(cli_main, "_CWD_ENV_PATH", cwd_env, raising=False)
+
+        assert cli_main._probe_model_name() == "openai-codex/gpt-5.4"
+
+    def test_resume_prompt_treats_plain_text_as_first_turn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Typing a chat message at the resume prompt must not discard it."""
+        cli_main = importlib.import_module("cli.main")
+        session = SimpleNamespace(session_id="sess_1", title="hello")
+        store = SimpleNamespace(list_sessions=lambda limit=1: [session])
+
+        monkeypatch.setattr(cli_main, "_session_store", lambda: store)
+        monkeypatch.setattr("builtins.input", lambda _prompt: "hello")
+
+        result = cli_main._maybe_resume_last_session(cli_main.get_console())
+
+        assert result == {"pending_input": "hello"}
+
+    @pytest.mark.parametrize("answer", ["", "n", "new", "no"])
+    def test_resume_prompt_explicit_new_answers_start_new_session(
+        self, monkeypatch: pytest.MonkeyPatch, answer: str
+    ) -> None:
+        cli_main = importlib.import_module("cli.main")
+        session = SimpleNamespace(session_id="sess_1", title="hello")
+        store = SimpleNamespace(list_sessions=lambda limit=1: [session])
+
+        monkeypatch.setattr(cli_main, "_session_store", lambda: store)
+        monkeypatch.setattr("builtins.input", lambda _prompt: answer)
+
+        assert cli_main._maybe_resume_last_session(cli_main.get_console()) is None
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, model_validator, field_validator
@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 _VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}
 _VALID_ENGINES = {"daily", "options"}
+_PRICE_PANEL_COLUMNS = ("open", "high", "low", "close", "volume", "vwap", "amount")
+_FUND_PREFIX = "fund:"
 
 
 class BacktestConfigSchema(BaseModel):
@@ -240,6 +242,180 @@ def _validate_class_body(node: ast.ClassDef) -> None:
         )
 
 
+# --- Runtime-reachable operation scrubber (VT-001 defense-in-depth) ---
+#
+# The structural checks above only reject *import-time* execution. The real
+# exposure is that once ``SignalEngine`` is instantiated and ``.generate()`` is
+# called, arbitrary code inside its method bodies runs with no runtime sandbox.
+# This scrubber walks the code that actually executes during a backtest — every
+# ``SignalEngine`` method plus any module-level helper transitively called from
+# one — and rejects network / process-spawn / dynamic-exec / filesystem-write
+# operations there.
+#
+# It is deliberately scoped to *reachable* code, not the whole file: the bundled
+# skill examples (agent/src/skills/*/example_signal_engine.py) legitimately carry
+# ``import requests`` + ``requests.get`` inside standalone ``_fetch_okx`` helpers
+# and ``if __name__ == "__main__"`` demo blocks that the runner never executes
+# (it does ``import module; SignalEngine().generate(data_map)``). Blocking those
+# imports file-wide would reject strategies generated from ~12 shipped skills, so
+# we block the dangerous *use* along the executed path instead of a harmless
+# unused top-level import. Transitive reach via ``getattr``/indirection is a
+# documented residual — see the VT-001 note; this is not a kernel-level guarantee.
+_FORBIDDEN_IMPORT_MODULES = frozenset(
+    {
+        "socket",
+        "socketserver",
+        "subprocess",
+        "urllib",
+        "urllib2",
+        "urllib3",
+        "http",
+        "requests",
+        "httpx",
+        "aiohttp",
+        "ftplib",
+        "smtplib",
+        "telnetlib",
+        "multiprocessing",
+        "ctypes",
+    }
+)
+# ``os`` itself is allowed (os.path etc.), but these attributes shell out, spawn,
+# or read the process environment — none has a place in a signal engine.
+_FORBIDDEN_OS_ATTRS = frozenset(
+    {
+        "system",
+        "popen",
+        "popen2",
+        "popen3",
+        "popen4",
+        "fork",
+        "forkpty",
+        "putenv",
+        "unsetenv",
+        "getenv",
+        "environ",
+        "environb",
+        "startfile",
+    }
+)
+_FORBIDDEN_BUILTINS = frozenset(
+    {"eval", "exec", "compile", "__import__", "globals", "locals", "vars", "breakpoint"}
+)
+_OPEN_WRITE_MODE_CHARS = frozenset("wax+")
+_SCRUB_MSG = "is not allowed inside generated strategy code"
+
+
+def _is_forbidden_os_attr(attr: str) -> bool:
+    """Return whether ``os.<attr>`` shells out, spawns, execs, or reads env."""
+    return attr in _FORBIDDEN_OS_ATTRS or attr.startswith(("spawn", "exec"))
+
+
+def _attribute_root_name(node: ast.Attribute) -> str | None:
+    """Return the leftmost ``Name`` id of an attribute chain (``a.b.c`` -> ``a``)."""
+    current: ast.AST = node
+    while isinstance(current, ast.Attribute):
+        current = current.value
+    return current.id if isinstance(current, ast.Name) else None
+
+
+def _reject_forbidden_open(node: ast.Call) -> None:
+    """Reject ``open()`` used to write files or read a non-relative-literal path."""
+    func = node.func
+    is_builtin_open = isinstance(func, ast.Name) and func.id == "open"
+    is_io_os_open = (
+        isinstance(func, ast.Attribute)
+        and func.attr == "open"
+        and isinstance(func.value, ast.Name)
+        and func.value.id in {"io", "os"}
+    )
+    if not (is_builtin_open or is_io_os_open):
+        return
+
+    mode_node: ast.AST | None = node.args[1] if len(node.args) >= 2 else None
+    for kw in node.keywords:
+        if kw.arg == "mode":
+            mode_node = kw.value
+    if mode_node is not None:
+        if not (isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str)):
+            raise ValueError(f"open() with a non-literal mode {_SCRUB_MSG}")
+        if any(ch in _OPEN_WRITE_MODE_CHARS for ch in mode_node.value):
+            raise ValueError(f"Writing files via open(mode={mode_node.value!r}) {_SCRUB_MSG}")
+
+    path_node = node.args[0] if node.args else None
+    if not (isinstance(path_node, ast.Constant) and isinstance(path_node.value, str)):
+        raise ValueError(f"open() with a non-literal path {_SCRUB_MSG}")
+    path = path_node.value
+    if path.startswith(("/", "~", "\\")) or ".." in path or (len(path) > 1 and path[1] == ":"):
+        raise ValueError(f"open() with a non-relative path {path!r} {_SCRUB_MSG}")
+
+
+def _reject_forbidden_node(node: ast.AST) -> None:
+    """Raise ``ValueError`` if a single AST node performs a forbidden operation."""
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            if alias.name.split(".")[0] in _FORBIDDEN_IMPORT_MODULES:
+                raise ValueError(f"Import of {alias.name!r} {_SCRUB_MSG}")
+    elif isinstance(node, ast.ImportFrom):
+        root = (node.module or "").split(".")[0]
+        if root in _FORBIDDEN_IMPORT_MODULES:
+            raise ValueError(f"Import from {node.module!r} {_SCRUB_MSG}")
+        if root == "os":
+            for alias in node.names:
+                if _is_forbidden_os_attr(alias.name):
+                    raise ValueError(f"Import of os.{alias.name} {_SCRUB_MSG}")
+    elif isinstance(node, ast.Attribute):
+        root = _attribute_root_name(node)
+        if root in _FORBIDDEN_IMPORT_MODULES:
+            raise ValueError(f"Use of {root}.{node.attr} {_SCRUB_MSG}")
+        if root == "os" and _is_forbidden_os_attr(node.attr):
+            raise ValueError(f"Use of os.{node.attr} {_SCRUB_MSG}")
+    elif isinstance(node, ast.Name):
+        if node.id in _FORBIDDEN_BUILTINS:
+            raise ValueError(f"Use of {node.id!r} {_SCRUB_MSG}")
+    elif isinstance(node, ast.Call):
+        _reject_forbidden_open(node)
+
+
+def _scan_runtime_reachable(tree: ast.Module) -> None:
+    """Reject forbidden ops in ``SignalEngine`` methods + their transitive callees.
+
+    Entry points are every method defined directly on the ``SignalEngine`` class.
+    From there, any bare-name call that resolves to a module-level function is
+    followed and scanned too, so a payload hidden in a helper that ``generate()``
+    calls is still caught. Module-level functions never reached from a
+    ``SignalEngine`` method (standalone data-fetch helpers, ``__main__`` demos)
+    are intentionally left unscanned.
+    """
+    engine_cls = next(
+        (n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "SignalEngine"),
+        None,
+    )
+    if engine_cls is None:
+        return
+
+    module_funcs = {
+        n.name: n
+        for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    worklist: list[ast.AST] = [
+        m for m in engine_cls.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    visited: set[int] = set()
+    while worklist:
+        fn = worklist.pop()
+        if id(fn) in visited:
+            continue
+        visited.add(id(fn))
+        for node in ast.walk(fn):
+            _reject_forbidden_node(node)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                target = module_funcs.get(node.func.id)
+                if target is not None:
+                    worklist.append(target)
+
+
 def _validate_signal_engine_source(file_path: Path) -> None:
     """Reject import-time executable statements before loading signal_engine.py."""
     try:
@@ -268,6 +444,10 @@ def _validate_signal_engine_source(file_path: Path) -> None:
         raise ValueError(
             f"Executable top-level statement {type(node).__name__} is not allowed"
         )
+
+    # Deep pass: the structural loop above only guards import-time execution;
+    # this walks the code that runs on SignalEngine().generate() (VT-001).
+    _scan_runtime_reachable(tree)
 
 
 def _validate_signal_engine_class(engine_cls) -> None:
@@ -302,6 +482,7 @@ _MARKET_TO_SOURCE = {
     "tw_futures": "shioaji_futures",
     "us_equity": "yfinance",
     "hk_equity": "yfinance",
+    "india_equity": "yahoo",
     "crypto": "okx",
     "futures": "tushare",
     "fund": "tushare",
@@ -386,6 +567,242 @@ def _normalize_codes(codes: List[str], source: str) -> List[str]:
     if source in ("okx", "ccxt"):
         return [c.replace("/", "-").upper() for c in codes]
     return codes
+
+
+def _columns_required_from_factor_spec(spec: Any) -> list[str]:
+    """Extract ``columns_required`` from supported factor spec shapes.
+
+    Args:
+        spec: Factor metadata as a dict, an Alpha-like object with ``meta``, an
+            object with ``columns_required``, or a raw string alpha id.
+
+    Returns:
+        Declared panel columns, or an empty list when the shape has none.
+    """
+    if isinstance(spec, dict):
+        meta = spec.get("meta")
+        if isinstance(meta, dict):
+            return [str(c) for c in meta.get("columns_required", [])]
+        return [str(c) for c in spec.get("columns_required", [])]
+    meta = getattr(spec, "meta", None)
+    if isinstance(meta, dict):
+        return [str(c) for c in meta.get("columns_required", [])]
+    columns = getattr(spec, "columns_required", None)
+    if columns is not None:
+        return [str(c) for c in columns]
+    return []
+
+
+def _selected_factor_specs(config: dict) -> list[Any]:
+    """Return selected factor metadata configured for the run.
+
+    The current runner has no dedicated factor-zoo execution path, so this
+    accepts the shapes used by callers that already know factor metadata
+    (``selected_factors``/``factors``/``alpha_metas``) and alpha-id lists that
+    can be resolved through the registry.
+
+    Args:
+        config: Backtest config.
+
+    Returns:
+        Factor specs or metadata dictionaries.
+    """
+    specs: list[Any] = []
+    for key in ("selected_factors", "factors", "alpha_metas"):
+        raw = config.get(key)
+        if isinstance(raw, list):
+            specs.extend(raw)
+        elif raw:
+            specs.append(raw)
+
+    alpha_ids: list[str] = []
+    for key in ("alpha_ids", "factor_ids", "alphas"):
+        raw = config.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            alpha_ids.append(raw)
+        else:
+            alpha_ids.extend(str(item) for item in raw)
+
+    if alpha_ids:
+        from src.factors.registry import get_default_registry
+
+        registry = get_default_registry()
+        for alpha_id in alpha_ids:
+            try:
+                specs.append(registry.get(alpha_id).meta)
+            except KeyError:
+                logger.warning("selected alpha_id %r is not registered; skipping", alpha_id)
+    return specs
+
+
+def _fund_columns_required(selected_factors: Iterable[Any]) -> list[str]:
+    """Collect requested ``fund:*`` panel columns from selected factors.
+
+    Args:
+        selected_factors: Factor metadata/spec objects.
+
+    Returns:
+        Stable, de-duplicated ``fund:*`` column names.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for spec in selected_factors:
+        for column in _columns_required_from_factor_spec(spec):
+            if not column.startswith(_FUND_PREFIX) or column in seen:
+                continue
+            seen.add(column)
+            out.append(column)
+    return out
+
+
+def _build_price_panel(data_map: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Convert ``code -> OHLCV frame`` rows into the factor panel shape.
+
+    Args:
+        data_map: Backtest loader output.
+
+    Returns:
+        ``column -> dates x symbols`` panel for price columns present in the
+        data map.
+    """
+    panel: dict[str, pd.DataFrame] = {}
+    for column in _PRICE_PANEL_COLUMNS:
+        series_by_symbol = {
+            symbol: frame[column]
+            for symbol, frame in data_map.items()
+            if column in frame.columns
+        }
+        if series_by_symbol:
+            panel[column] = pd.DataFrame(series_by_symbol)
+    return panel
+
+
+def _nan_fundamental_frame(
+    index: pd.DatetimeIndex,
+    symbols: list[str],
+) -> pd.DataFrame:
+    """Build an all-NaN fundamental panel frame."""
+    return pd.DataFrame(float("nan"), index=index, columns=symbols)
+
+
+def _inject_fundamental_panel(
+    panel: dict[str, pd.DataFrame],
+    *,
+    symbols: list[str],
+    fund_columns: Iterable[str],
+    start: str,
+    end: str,
+    freq: str = "ttm",
+    pit: bool = True,
+    source: str = "auto",
+    index: pd.DatetimeIndex | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Inject required fundamental fields into a factor panel.
+
+    Args:
+        panel: Existing factor panel keyed by column name.
+        symbols: Symbols to load.
+        fund_columns: Requested ``fund:*`` columns.
+        start: Start date string.
+        end: End date string.
+        freq: Fundamental frequency. Defaults to ``ttm``.
+        pit: Whether point-in-time loading is enforced.
+        source: Fundamental data source route.
+        index: Optional price index to align to. Defaults to ``panel["close"]``.
+
+    Returns:
+        The same panel dictionary with ``fund:<field>`` frames added.
+    """
+    fields = [column[len(_FUND_PREFIX):] for column in fund_columns if column.startswith(_FUND_PREFIX)]
+    fields = list(dict.fromkeys(fields))
+    if not fields:
+        return panel
+
+    price_index = index
+    if price_index is None:
+        close = panel.get("close")
+        price_index = close.index if close is not None else pd.DatetimeIndex([])
+
+    try:
+        from backtest.loaders.fundamentals_loader import load_fundamental_panel
+
+        loaded = load_fundamental_panel(
+            symbols=symbols,
+            fields=fields,
+            start=start,
+            end=end,
+            freq=freq,
+            pit=pit,
+            source=source,
+            index=price_index,
+        )
+    except Exception as exc:  # noqa: BLE001 - data-source failure must not kill backtest
+        logger.warning(
+            "fundamental panel load failed for fields=%s symbols=%s: %s; injecting NaN frames",
+            fields,
+            symbols,
+            exc,
+            exc_info=True,
+        )
+        loaded = {}
+
+    for field in fields:
+        frame = loaded.get(field)
+        if not isinstance(frame, pd.DataFrame):
+            frame = _nan_fundamental_frame(price_index, symbols)
+        else:
+            frame = frame.reindex(index=price_index, columns=symbols)
+        panel[f"{_FUND_PREFIX}{field}"] = frame
+    return panel
+
+
+def _project_panel_fields_to_data_map(
+    data_map: dict[str, pd.DataFrame],
+    panel: dict[str, pd.DataFrame],
+    fund_columns: Iterable[str],
+) -> dict[str, pd.DataFrame]:
+    """Copy injected panel fields back to per-symbol backtest frames."""
+    out = {symbol: frame.copy() for symbol, frame in data_map.items()}
+    for column in fund_columns:
+        frame = panel.get(column)
+        if frame is None:
+            continue
+        for symbol, symbol_frame in out.items():
+            if symbol in frame.columns:
+                symbol_frame[column] = frame[symbol].reindex(symbol_frame.index)
+            else:
+                symbol_frame[column] = float("nan")
+    return out
+
+
+def _maybe_inject_fundamentals_for_factor_panel(
+    data_map: dict[str, pd.DataFrame],
+    config: dict,
+) -> dict[str, pd.DataFrame]:
+    """Inject ``fund:*`` factor dependencies when selected factors request them."""
+    selected_factors = _selected_factor_specs(config)
+    fund_columns = _fund_columns_required(selected_factors)
+    if not fund_columns:
+        return data_map
+
+    panel = _build_price_panel(data_map)
+    close = panel.get("close")
+    price_index = close.index if close is not None else pd.DatetimeIndex([])
+    symbols = list(data_map)
+    _inject_fundamental_panel(
+        panel,
+        symbols=symbols,
+        fund_columns=fund_columns,
+        start=config.get("start_date", ""),
+        end=config.get("end_date", ""),
+        freq="ttm",
+        pit=True,
+        source="auto",
+        index=price_index,
+    )
+    return _project_panel_fields_to_data_map(data_map, panel, fund_columns)
 
 
 # --- Main entry ---
@@ -509,6 +926,7 @@ def main(run_dir: Path) -> None:
     if not data_map:
         print(json.dumps({"error": "No data fetched"}))
         sys.exit(1)
+    data_map = _maybe_inject_fundamentals_for_factor_panel(data_map, config)
 
     if source == "auto":
         config["_run_card_effective_sources"] = sorted(_group_codes_by_source(codes))
@@ -587,6 +1005,13 @@ def _create_market_engine(source: str, config: dict, codes: List[str]):
     if "tw_equity" in markets:
         from backtest.engines.tw_equity import TWEquityEngine
         return TWEquityEngine(config)
+
+    # India equity routing — must precede source-based routing because India's
+    # effective source is ``yahoo``, which has no Wave-1 branch and would
+    # otherwise fall through to the crypto default.
+    if "india_equity" in markets:
+        from backtest.engines.india_equity import IndiaEquityEngine
+        return IndiaEquityEngine(config)
 
     # Original routing (Wave 1)
     if source in ("okx", "ccxt"):

@@ -6,10 +6,242 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Security hardening**: all 10 findings from the 2026-07-10 external audit
+  closed (#476, tracking discussion #468) — Docker multi-stage rebuild with
+  digest-pinned base images, AST-hardened backtest sandbox (blocks
+  network/subprocess/eval/os.environ/unsafe-open reachable from generated
+  code, including inside nested function bodies), short-lived single-use SSE
+  auth tickets replacing a long-lived key in the URL/logs, hardened Compose
+  (`read_only`, dropped capabilities, `no-new-privileges`, resource limits),
+  auth + rate limiting on `/correlation`, security headers (CSP
+  Report-Only, `X-Content-Type-Options`, `Permissions-Policy`), `/live` +
+  `/ready` health split, hash-locked dependencies wired into the Docker
+  build, GitHub Actions pinned by commit SHA, and an HMAC-authenticated
+  factor cache.
+- Opt-in **TAP mode** for Alpaca (#377, thanks @0xZKnw) — routes all broker
+  egress through a self-hosted TAP proxy so the agent process never holds
+  the raw API key, with writes blocking on human approval.
+- Realized portfolio turnover (`avg_turnover` / `total_turnover`) surfaced
+  in backtest metrics for every optimizer (#478, thanks @Robin1987China).
+- **Frazzini-Pedersen betting-against-beta** academic factor (#480, thanks
+  @YogeshModi24) — Alpha Zoo: 460 → **461**.
+- **Strategy Development Manager** skill (#457, thanks @shadowinlife, closes
+  #455) — `sdm_register` / `sdm_status` / `sdm_decay_scan` turn academic
+  papers and broker research into registered factors/strategies with a
+  persistent SQLite artifact store (`UNIQUE(name, universe)`) and automated
+  IC/Sharpe decay monitoring driving an active → monitoring → decayed →
+  disabled lifecycle. Pluggable OCR for `read_document` (local RapidOCR by
+  default; cloud Qwen-VL is explicit opt-in only via
+  `VIBE_TRADING_OCR_ENGINE=qwen-vl`, never auto-selected). Skills: 86 → **87**.
+- **Requesty** as an OpenAI-compatible LLM gateway provider (#474, thanks
+  @Thibaultjaigu) — same `provider/model` naming and capability shape as
+  OpenRouter, wired through CLI onboarding, provider menu, and Settings.
+- Binance USD-M perpetual routing, slice 1 of #462 (#470, thanks @honginp) —
+  explicit `BTC-USDT-PERP` symbol contract with execution/mark price
+  separation, fail-closed when the two aren't timestamp-synchronized.
 
 ### Changed
+- Correlation tab accepts bare tickers like `AAPL,SPY` and walks the full
+  loader fallback chain instead of failing with `Fetched: []` (#472, thanks
+  @yxhuang, closes #471).
+- `local` loader honors the requested interval via OHLCV resampling instead
+  of silently returning daily bars (#467, thanks @Shizoqua).
 
 ### Fixed
+- FastMCP transport imports work across both module layouts (#469, thanks
+  @roberttidball).
+- Portfolio optimizers no longer include the decision bar's close-to-close
+  return in weights executed at that bar's open (#487, thanks @YZY0108).
+- Preflight (`vibe-trading run`) no longer resolves provider/model against a
+  stale `EnvConfig` snapshot cached before dotenv loads (#479, thanks
+  @ananaymital, closes #477).
+- Switching providers no longer leaves a stale `OPENAI_BASE_URL` from a
+  previous configuration silently overriding the newly-resolved endpoint
+  (#484, thanks @Bortlesboat, closes #482).
+
+## [0.1.11] — 2026-07-11
+
+### Added
+- **Indian equity (NSE/BSE) as a first-class market** (#305, thanks
+  @muku314115). A dedicated `IndiaEquityEngine` — T+1 delivery, no overnight
+  shorts (opt-in intraday), configurable circuit bands, 1-share lots, and a
+  config-driven STT / stamp-duty / exchange / SEBI / GST cost stack — with
+  `.NS`/`.BO` symbol routing (`yahoo → yfinance → india_broker → local`), an
+  opt-in read-only Shoonya/Dhan `india_broker` data bridge, and 255
+  alpha101/qlib158 factors opted into the new `equity_in` universe. Backtest
+  engines: 7 → **8**; market-data sources: 19 → **20**.
+- **Fundamental factor layer, Phase 1.** PIT-safe SEC fundamentals flow into
+  dense daily `fund:*` factor panels — filed-date anchoring, first-filed
+  restatement policy, true-quarter `(start, end)` frame selection with Q4
+  synthesis (so YTD/annual frames can't contaminate TTM), and rolling TTM —
+  plus a `get_fundamentals` tool and 4 quality/value factors in a new
+  `fundamental` zoo family. Alpha Zoo: 456 → **460** across **5** families.
+- **Research Autopilot Phase 3 — the loop closes** (#267, thanks
+  @Robin1987China). `scaffold_signal_engine` writes a contract-correct signal
+  engine from a hypothesis and `link_autopilot_backtest` runs it, completing
+  hypothesis → signal-engine → backtest end to end.
+- **4 canonical academic alphas** (#277, thanks @Robin1987China) — Jegadeesh
+  short-term reversal, George–Hwang 52-week high, Amihud illiquidity, and
+  Harvey–Siddique co-skewness join the academic family (452 → 456), with a
+  **central OHLC-invariant guard** at the runner fetch boundary dropping
+  malformed bars from every loader (#274, thanks @Shizoqua).
+- **Scheduled research runs end to end** (#278 closing #254, thanks
+  @mvanhorn). A default-off background executor
+  (`VIBE_TRADING_ENABLE_SCHEDULER`) fires due interval/cron jobs through the
+  session runtime, on top of a crash-safe atomic job store, 3 auth-gated
+  `/scheduled-runs` REST routes, a Reports library, and post-backtest
+  attribution. Route test coverage followed in #452 (thanks @Robin1987China).
+- **IM channel runtime — research delivery over 16 adapters.** The agent
+  session runtime now attaches to 16 built-in message adapters (WebSocket,
+  Telegram, Slack, Discord, Matrix, WhatsApp, Signal, QQ/NapCat,
+  WeChat/WeCom, Feishu, DingTalk, email, MS Teams, MoChat), dependency-gated
+  with install hints, configurable via `AgentConfig.channels`, and surfaced in
+  REST (`/channels/*`), CLI (`vibe-trading channels ...`), and Web Settings —
+  in all 5 UI locales.
+- **QVeris optional premium data track.** The 19 free sources stay the
+  default; an explicit-only QVeris mode (Settings → QVeris or
+  `vibe-trading data mode paid`) unlocks 63+ providers behind 3 key-gated
+  tools (`qveris_search` / `qveris_inspect` / `qveris_execute`) with
+  preview-by-default and a session budget gate. Never enters auto-fallback.
+- **Trading 212 read-only connector** (#321, thanks @mvanhorn) — 11 brokers
+  total. Trading 212 exposes no runtime paper/live discriminator, so the
+  connector is fully read-only: `place_order`/`cancel_order` hard-refuse
+  every order, paper included. Live order guards also gained an opt-in,
+  broker-agnostic `PreTradeAdvisoryInterface` that records advisory reviews
+  without bypassing the mandate gate.
+- **Turnover-aware portfolio optimizer** (#466, thanks @Robin1987China) —
+  fifth optimizer: mean-variance utility with an L1 penalty on weight changes
+  versus the previous rebalance (SLSQP, long-only simplex), so the portfolio
+  only trades when expected improvement outweighs churn. Optimizers: 4 → **5**.
+- **`analyze_image` vision tool** (#464, thanks @fei-moss) — send a local
+  chart / K-line screenshot / app screenshot to the session model as a
+  multimodal message and get a semantic read (complements `read_document`'s
+  OCR). Path-validated against the allowed file roots; requires a
+  vision-capable model. Tools: 71 → **72** free-mode (75 with QVeris).
+- **Value-investing toolkit** (thanks @sambazhu): financial-rigor +
+  report-audit tools, 4 skills, and a `value_investing_committee` swarm
+  preset. Swarm presets: 29 → **30**.
+- **CN-friendly search fallbacks** — `web_search` gains China-reachable
+  backends in the ordered no-key engine chain.
+- **Provider roster additions**: Kimi for Coding as a distinct provider
+  (#435, thanks @yxhuang), opencode provider mappings (#444, thanks
+  @imsankz), Codex OAuth default model bumped to `openai-codex/gpt-5.4`
+  (#446, thanks @morluto).
+- **SKILL.md manifest guard test** (#461, thanks @asahikiko) — the packaged
+  skill's capability counts (skills / presets / zoo / sources / MCP tools /
+  engines) are now asserted against source, so distribution paperwork can't
+  silently drift again.
+
+### Changed
+- **`api_server.py` modularization completed** — 1,103 → 371 lines (#424
+  closing #331, thanks @shadowinlife), after route slices for channels,
+  settings, and the remaining route groups, plus a shared compat layer with
+  session-service writeback fixes.
+- **Centralized environment variable management** (#440 closing #438, thanks
+  @shadowinlife) — every env var flows through a single Pydantic `EnvConfig`
+  schema, enforced by an AST-based CI gate that rejects raw
+  `os.getenv`/`os.environ` outside `agent/src/config/`.
+- **Factor engine acceleration** — hot rolling operators use
+  `bottleneck`/NumPy fast paths, and alpha-bench parallelism stops resending
+  large panel payloads to workers.
+- **Robinhood Agentic MCP refresh** — current MCP tool names across generic
+  reads, live-runner plumbing, default read-only seeds, and mandate-gate
+  tests; interactive OAuth holds the handshake open through multi-minute
+  broker sign-ins (`VIBE_LIVE_AUTHORIZE_TIMEOUT_SECONDS`).
+- **Loader `fetch()` signatures** now match the loader protocol across
+  OKX / Tushare / yfinance (#437, thanks @shadowinlife).
+- **Timezone-aware UTC timestamps** across session, goal, channel, and API
+  paths (#397, thanks @mustafakamal88).
+- **Inbound IM media now lands under `~/.vibe-trading/uploads/<channel>/`**
+  (fixes #465, thanks @fei-moss for the report) — inside the default allowed
+  file roots, so the agent can read what users send over IM channels with
+  zero configuration. The Matrix E2E store moves to the runtime dir (legacy
+  path honored) so credentials never enter the readable root.
+
+### Fixed
+- **Docker/server startup crash** when FastAPI route iteration hit an
+  included-router entry without `path` (#450, thanks @Penn-Live).
+- **GLM thinking models on the zhipu provider** no longer lose their
+  reasoning stream (#458).
+- **Trading mandate UX guards** — a second-confirmation dialog before
+  committing a real mandate, unified error toasts, and clarified inputs
+  (#453, thanks @wison1717-maker).
+- **`trading_place_order` treats zero quantity/notional as unset** instead of
+  passing a zero-size order to the broker (#417, thanks @irfanallana-oss).
+- **Longbridge Decimal values serialize as floats** across quotes, bars,
+  balances, positions, orders, and executions (#459, thanks @fanfpy).
+- **NapCat private messages now trigger pairing codes** (#463, thanks
+  @fei-moss).
+- **Backtest validation artifacts**: `validation.json` no longer requires a
+  pre-existing artifacts dir (#429, thanks @isaveall), and nested
+  `NaN`/`Infinity` values are normalized before writing, so strict JSON
+  parsers don't choke.
+- **CLI**: `resume` preserves the first user message (#448 closing #447,
+  thanks @morluto); `--swarm-run` rejects extra tokens with a clear error
+  (#428, thanks @isaveall); the interactive CLI prints the session-id on
+  exit with a copy-paste resume hint.
+- **Shadow Account**: extracted rules carry RSI / prior-return entry bounds
+  computed from PIT-safe context fetched through the loader registry, so
+  generated engines enter on real conditions (#302/#314/#316, thanks
+  @Robin1987China); tushare ETF/index/HK symbol routing fixed along the way.
+- **Content-filter resilience** — event-driven and swarm runs skip individual
+  LLM content-moderation hits and warn when filter rates are high; Gemini
+  safety finish-reasons recognized.
+- **IM channel reply timeout is configurable** (#413, thanks @dpersek).
+- **Provider preflight no longer follows redirects** (#404 closing #402,
+  thanks @dpersek).
+- **Windows baseline green** — `vibe-trading setup`/`dev` handle Windows
+  TypeScript builds, correct cwd, the Vite 5899 port, and child-process
+  shutdown; mootdx batch pulls let `KeyboardInterrupt`/`SystemExit`
+  propagate.
+- **Security hardening** — loopback API CSRF protection (cross-site POSTs
+  can no longer drive side effects on the local API), SSRF guards on
+  interactive fetch paths, tightened API/Docker/frontend dev defaults, and
+  cleared frontend dependency/CSP alerts.
+- **Reverted the IRR-AGL reliability/governance stack** (#405/#416) after it
+  broke session chats on day 1 (#433 — thanks @yxhuang for the precise
+  diagnosis); the evidence-bound research-pipeline direction continues in
+  reviewable slices on #442.
+
+## [0.1.10] — 2026-06-19
+
+Roll-up release; see the
+[v0.1.10 release notes](https://github.com/HKUDS/Vibe-Trading/releases/tag/v0.1.10)
+for the full narrative.
+
+### Added
+- **Global data layer** — market-data sources 10 → 18 (direct-API Eastmoney /
+  Sina / Stooq / Yahoo + key-gated Finnhub / Alpha Vantage / Tiingo / FMP)
+  with ban-risk-ordered fallback chains behind a shared throttled HTTP gate,
+  plus **18 read-only data tools** (fund flow, dragon-tiger, northbound,
+  margin, block trades, shareholder count, lockup, sector, research, news,
+  SEC filings, financial statements, options chains, institutional holdings,
+  screening, symbol search, FRED macro, iwencai) — all MCP-exposed.
+- **10 broker SDK connectors** — Tiger / Longbridge / Alpaca / OKX / Binance /
+  Futu / Dhan / Shoonya join IBKR (local read-only) and Robinhood (Agentic
+  MCP); direct-SDK live orders pass the fail-closed bounded-autonomy gate;
+  brokers without a runtime paper/live discriminator are structurally capped
+  at paper + read-only.
+- **Alpha Zoo `alpha compare`** across CLI, REST, Web UI, and agent tool.
+- **Research Autopilot Phase 1** (`run_research_autopilot`,
+  `generate_backtest_config`) and the local Data Bridge loader.
+- **Opt-in local data cache** (`VIBE_TRADING_DATA_CACHE`) for settled bars
+  under `~/.vibe-trading/cache/`.
+- Per-run token usage (`llm_usage.json`) + progressive Run Detail charts;
+  CLI `resume <session-id>`.
+
+### Changed
+- **Provider reliability overhaul** — DeepSeek hang fixes, Kimi access,
+  streaming liveness watchdog, Gemini 3.x multi-turn tool-calling fix.
+- Swarm workers pull market data through the loader layer; live swarm status
+  cards stream in the chat timeline.
+- Baseline install slimmed (`pyharmonics`/`ta` behind
+  `vibe-trading-ai[harmonic]`).
+
+### Fixed
+- Community security-hardening wave (#241–#258): Settings write auth, shell
+  tools opt-in, LAN-access 403 clarity, Docker-to-host Ollama URL rewrite,
+  web_search multi-engine fallback, and more.
 
 ## [0.1.9] — 2026-06-01
 

@@ -13,6 +13,8 @@ build in CI) cannot satisfy or break them.
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -109,3 +111,22 @@ def test_non_loopback_with_key_does_not_warn(
 
     out = capsys.readouterr().out
     assert _BIND_WARN not in out
+
+
+@pytest.mark.unit
+def test_serve_mounts_frontend_when_routes_include_router_without_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_api_file = tmp_path / "agent" / "api_server.py"
+    fake_dist = tmp_path / "frontend" / "dist"
+    fake_dist.mkdir(parents=True)
+    fake_api_file.parent.mkdir(parents=True)
+    fake_api_file.write_text("# test module path\n", encoding="utf-8")
+    (fake_dist / "index.html").write_text("<div>Vibe-Trading</div>\n", encoding="utf-8")
+
+    monkeypatch.setattr(api_server, "__file__", str(fake_api_file))
+    api_server.app.routes.insert(0, SimpleNamespace())
+    try:
+        assert _run_serve([]) == "127.0.0.1"
+    finally:
+        api_server.app.routes.pop(0)

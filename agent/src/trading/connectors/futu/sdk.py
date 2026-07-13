@@ -619,7 +619,9 @@ def _unlock_if_live(cfg: FutuConfig, trade_ctx: Any, futu: ModuleType) -> str | 
     """
     if cfg.environment != "live":
         return None
-    pwd_md5 = os.environ.get(LIVE_TRADE_PWD_ENV, "").strip()
+    from src.config.accessor import get_env_config
+
+    pwd_md5 = get_env_config().api.futu_trade_pwd_md5.strip()
     if not pwd_md5:
         return f"live order requires {LIVE_TRADE_PWD_ENV}"
     ret, data = trade_ctx.unlock_trade(password_md5=pwd_md5, is_unlock=True)

@@ -35,7 +35,7 @@ from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from src.factors.base import Alpha
 
@@ -59,9 +59,29 @@ Theme = Literal[
     "leverage",
 ]
 
-PanelColumn = Literal["open", "high", "low", "close", "volume", "vwap", "amount"]
+_PRICE_COLS = {"open", "high", "low", "close", "volume", "vwap", "amount"}
 
-Universe = Literal["equity_us", "equity_cn", "equity_hk", "equity_tw", "crypto", "futures"]
+PanelColumn = str
+
+Universe = Literal["equity_us", "equity_cn", "equity_hk", "equity_tw", "equity_in", "crypto", "futures"]
+
+
+def validate_columns_required(cols: list[str]) -> None:
+    """Validate required panel columns for alpha metadata.
+
+    Args:
+        cols: Declared panel columns from ``__alpha_meta__``.
+
+    Raises:
+        ValueError: If a column is neither a known price column nor a
+            ``fund:``-prefixed fundamental column.
+    """
+    for column in cols:
+        if column in _PRICE_COLS:
+            continue
+        if column.startswith("fund:"):
+            continue
+        raise ValueError(f"unknown panel column: {column}")
 
 
 class AlphaMeta(BaseModel):
@@ -78,9 +98,31 @@ class AlphaMeta(BaseModel):
     requires_sector: bool = False
     universe: list[Universe]
     frequency: list[str]
-    decay_horizon: int = Field(ge=0, le=60)
+    decay_horizon: int = Field(ge=0, le=512)
     min_warmup_bars: int = Field(ge=0)
     notes: str = ""
+
+    @field_validator("columns_required")
+    @classmethod
+    def validate_columns_required(cls, v: list[str]) -> list[str]:
+        """Validate factor panel dependencies.
+
+        Price columns are fixed, while fundamental fields are an open namespace
+        under the ``fund:`` prefix. The runtime loader decides whether a
+        particular fundamental field can be populated.
+
+        Args:
+            v: Declared panel columns.
+
+        Returns:
+            The validated column list.
+
+        Raises:
+            ValueError: If any column is outside the price set and the
+                ``fund:`` namespace.
+        """
+        validate_columns_required(v)
+        return v
 
 
 class SkipAlpha(Exception):

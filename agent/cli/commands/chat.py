@@ -11,7 +11,6 @@ fallback workflows.
 
 from __future__ import annotations
 
-import os
 from typing import Any, Optional
 
 from rich.console import Console
@@ -50,8 +49,11 @@ def cmd_model(ctx: Any = None, *args: str) -> int:  # noqa: ARG001 — ctx unuse
 
         _show_settings()
     except Exception as exc:  # noqa: BLE001 — legacy may be absent on partial install
-        provider = os.getenv("LANGCHAIN_PROVIDER", "(not set)")
-        model = os.getenv("LANGCHAIN_MODEL_NAME", "(not set)")
+        from src.config.accessor import get_env_config
+
+        cfg = get_env_config()
+        provider = cfg.llm.langchain_provider or "(not set)"
+        model = cfg.llm.langchain_model_name or "(not set)"
         console.print(Text(f"Provider: {provider}", style="bold"))
         console.print(Text(f"Model:    {model}", style="bold"))
         console.print(Text(f"(legacy _show_settings unavailable: {exc})", style="dim"))

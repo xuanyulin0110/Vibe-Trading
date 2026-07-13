@@ -44,7 +44,31 @@ _TEXT_EXTS = {
     ".dockerfile", ".makefile", ".cmake",
 }
 
-_ocr_engine = None
+from src.tools.ocr import get_ocr_engine, get_ocr_install_hint
+
+_cached_ocr_engine = None
+_cached_ocr_checked = False
+
+
+def _get_ocr():
+    """Return the configured OCR engine (cached), or None."""
+    global _cached_ocr_engine, _cached_ocr_checked
+    if not _cached_ocr_checked:
+        _cached_ocr_engine = get_ocr_engine()
+        _cached_ocr_checked = True
+    return _cached_ocr_engine
+
+
+def _ocr_available() -> bool:
+    return _get_ocr() is not None
+
+
+def _ocr_image_array(img) -> str:
+    """Run OCR on a numpy image via the pluggable engine."""
+    engine = _get_ocr()
+    if engine is None:
+        return ""
+    return engine.recognize(img)
 
 
 # ---------------- shared helpers ----------------
@@ -74,27 +98,6 @@ def _envelope(path: Path, fmt: str, text: str, **extra: Any) -> str:
     payload.update(extra)
     payload = with_security_warnings(payload, fields=("text",))
     return json.dumps(payload, ensure_ascii=False)
-
-
-def _get_ocr():
-    """Lazily load RapidOCR. Raises ImportError if not installed."""
-    global _ocr_engine
-    if _ocr_engine is None:
-        from rapidocr_onnxruntime import RapidOCR  # type: ignore
-        _ocr_engine = RapidOCR()
-    return _ocr_engine
-
-
-def _ocr_image_array(img) -> str:
-    """Run OCR on a numpy image; return joined lines or empty string."""
-    try:
-        ocr = _get_ocr()
-    except ImportError:
-        return ""
-    result, _ = ocr(img)
-    if not result:
-        return ""
-    return "\n".join(item[1] for item in result)
 
 
 # ---------------- PDF ----------------
@@ -130,6 +133,7 @@ def _read_pdf(path: Path, pages: str) -> str:
         total_targets = len(targets)
         chunks: list[str] = []
         ocr_pages = 0
+        skipped_pages = 0
         for idx, i in enumerate(targets, start=1):
             if not 0 <= i < total_pages:
                 continue
@@ -144,7 +148,15 @@ def _read_pdf(path: Path, pages: str) -> str:
                     message=f"page {i + 1}/{total_pages}",
                 )
                 continue
-            # OCR fallback for image pages
+            if not _ocr_available():
+                skipped_pages += 1
+                emit_progress(
+                    "reading_pdf",
+                    current=idx,
+                    total=total_targets,
+                    message=f"page {i + 1}/{total_pages} (skipped: no OCR)",
+                )
+                continue
             bitmap = page.render(scale=300 / 72)
             img = bitmap.to_numpy()
             ocr_text = _ocr_image_array(img)
@@ -160,11 +172,19 @@ def _read_pdf(path: Path, pages: str) -> str:
                 message=f"page {i + 1}/{total_pages} (OCR)" if ocr_text.strip() else f"page {i + 1}/{total_pages}",
             )
         full = "\n\n".join(chunks)
+        if not full and skipped_pages > 0:
+            engine = _get_ocr()
+            hint = get_ocr_install_hint(engine)
+            return _err(
+                f"All {total_pages} page(s) are scanned/image pages with no "
+                f"extractable text, and no OCR engine is available. {hint}"
+            )
         return _envelope(
             path, "pdf", full,
             total_pages=total_pages,
             pages_read=len(targets),
             ocr_pages=ocr_pages,
+            skipped_pages=skipped_pages,
         )
     finally:
         doc.close()
@@ -249,9 +269,17 @@ def _read_image(path: Path) -> str:
     except Exception as exc:
         return _err(f"Failed to open image: {exc}")
 
+    if not _ocr_available():
+        engine = _get_ocr()
+        hint = get_ocr_install_hint(engine)
+        return _err(
+            f"This image requires OCR to extract text, but no OCR engine is "
+            f"available. {hint}"
+        )
+
     text = _ocr_image_array(img)
     if not text.strip():
-        return _envelope(path, "image", "", note="OCR returned no text (engine missing or empty image)")
+        return _envelope(path, "image", "", note="OCR returned no text (empty or unreadable image)")
     return _envelope(path, "image", text)
 
 

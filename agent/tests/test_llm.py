@@ -28,7 +28,7 @@ class TestProviderCapabilityAliases:
             zhipu_caps.base_url_env,
         )
 
-    @pytest.mark.parametrize("model", ["glm-4.6", "glm-5.1"])
+    @pytest.mark.parametrize("model", ["glm-4.6", "glm-5.1", "glm-5.2"])
     def test_glm_model_inference_uses_zhipu(self, model: str) -> None:
         caps = get_provider_capabilities(provider=None, model=model)
 
@@ -36,6 +36,31 @@ class TestProviderCapabilityAliases:
 
     def test_glm_provider_env_names_use_zhipu_env(self) -> None:
         assert provider_env_names("glm") == ("ZHIPU_API_KEY", "ZHIPU_BASE_URL")
+
+    def test_zhipu_captures_reasoning_without_replay(self) -> None:
+        """GLM thinking models put chain-of-thought in ``reasoning_content`` (#458).
+
+        Capture must be on so reasoning survives the ChatOpenAI boundary, but
+        replay stays off (DeepSeek posture) until verified live against bigmodel.
+        """
+        for alias in ("zhipu", "glm"):
+            caps = get_provider_capabilities(alias)
+            assert caps.capture_reasoning is True
+            assert caps.send_reasoning_content is False
+            assert caps.normalize_assistant_content is False
+
+    def test_kimi_coding_uses_own_env_namespace(self) -> None:
+        caps = get_provider_capabilities("kimi-coding")
+
+        assert caps.name == "kimi-coding"
+        assert provider_env_names("kimi-coding") == (
+            "KIMI_CODING_API_KEY",
+            "KIMI_CODING_BASE_URL",
+        )
+
+    @pytest.mark.parametrize("provider", ["opencode-zen", "opencode-go"])
+    def test_opencode_providers_use_openai_compatible_env(self, provider: str) -> None:
+        assert provider_env_names(provider) == ("OPENAI_API_KEY", "OPENAI_BASE_URL")
 
     @pytest.mark.parametrize("model", ["", "something-unknown"])
     def test_unknown_or_empty_model_without_provider_falls_back_to_openai(
@@ -151,6 +176,17 @@ class TestSyncProviderEnv:
             "OPENAI_API_KEY": "sk-shared",
         })
         assert result["OPENAI_API_KEY"] == "sk-shared"
+
+    def test_provider_base_url_replaces_stale_openai_url(self) -> None:
+        result = self._run_sync({
+            "LANGCHAIN_PROVIDER": "openrouter",
+            "OPENROUTER_API_KEY": "openrouter-key",
+            "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
+            "OPENAI_BASE_URL": "https://stale-provider.example/v1",
+        })
+
+        assert result["OPENAI_API_BASE"] == "https://openrouter.ai/api/v1"
+        assert result["OPENAI_BASE_URL"] == "https://openrouter.ai/api/v1"
 
     def test_minimax_provider(self) -> None:
         result = self._run_sync({
@@ -275,3 +311,67 @@ class TestReasoningEffortPassthrough:
         })
         assert captured["extra_body"]["reasoning"]["effort"] == "high"
 
+
+class TestKimiCodingProvider:
+    """Kimi for Coding is a distinct provider with Moonshot-compatible behavior."""
+
+    def test_reuses_moonshot_wire_behaviour(self) -> None:
+        kimi = get_provider_capabilities("kimi-coding")
+        moonshot = get_provider_capabilities("moonshot")
+
+        assert kimi.capture_reasoning is True
+        assert kimi.send_reasoning_content is True
+        assert kimi.normalize_assistant_content is True
+        assert kimi.default_headers.get("User-Agent") == moonshot.default_headers.get(
+            "User-Agent"
+        )
+
+    def test_env_mapping_to_openai_vars(self) -> None:
+        import src.providers.llm as llm_mod
+        llm_mod._dotenv_loaded = True
+
+        clean = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("OPENAI_", "LANGCHAIN_", "KIMI_CODING_", "MOONSHOT_"))
+        }
+        clean.update({
+            "LANGCHAIN_PROVIDER": "kimi-coding",
+            "KIMI_CODING_API_KEY": "sk-kimi-test",
+            "KIMI_CODING_BASE_URL": "https://api.kimi.com/coding/v1",
+        })
+        with patch.dict(os.environ, clean, clear=True):
+            _sync_provider_env()
+
+            assert os.environ.get("OPENAI_API_KEY") == "sk-kimi-test"
+            assert os.environ.get("OPENAI_API_BASE") == "https://api.kimi.com/coding/v1"
+
+    def _build_and_capture(self, temperature: str) -> dict:
+        import src.providers.llm as llm_mod
+        llm_mod._dotenv_loaded = True
+
+        captured: dict = {}
+
+        class _FakeChatOpenAI:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        env = {
+            "LANGCHAIN_PROVIDER": "kimi-coding",
+            "KIMI_CODING_API_KEY": "sk-kimi-test",
+            "KIMI_CODING_BASE_URL": "https://api.kimi.com/coding/v1",
+            "LANGCHAIN_MODEL_NAME": "kimi-for-coding",
+            "LANGCHAIN_TEMPERATURE": temperature,
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
+                build_llm()
+        return captured
+
+    def test_kimi_for_coding_temperature_forced_to_one(self) -> None:
+        captured = self._build_and_capture("0.0")
+        assert float(captured["temperature"]) == 1.0
+
+    def test_sets_kimi_user_agent_header(self) -> None:
+        captured = self._build_and_capture("1.0")
+        assert captured["default_headers"]["User-Agent"].startswith("Vibe-Trading/")

@@ -1,9 +1,11 @@
-export const DOCS_DEFAULT_VERSION = "0.1.9";
+export const DOCS_DEFAULT_VERSION = "0.1.11";
 export const DOCS_LATEST_ALIAS = "latest";
 export const DOCS_DEFAULT_PAGE = "getting-started/vibe-trading-overview";
 
 export const DOCS_VERSIONS = [
-  { name: "0.1.9", label: "0.1.9 (latest)" },
+  { name: "0.1.11", label: "0.1.11 (latest)" },
+  { name: "0.1.10", label: "0.1.10" },
+  { name: "0.1.9", label: "0.1.9" },
   { name: "0.1.8", label: "0.1.8" },
   { name: "0.1.7", label: "0.1.7" }
 ];
@@ -193,7 +195,7 @@ TIMEOUT_SECONDS=2400</code></pre>
             id: "presets",
             title: "Presets",
             body: `
-              <p>Vibe-Trading includes 29 presets such as investment committee, quant strategy desk, crypto trading desk, macro rates and FX desk, and risk committee.</p>
+              <p>Vibe-Trading includes 30 presets such as investment committee, quant strategy desk, crypto trading desk, macro rates and FX desk, and risk committee.</p>
               <pre><code>vibe-trading --swarm-presets
 vibe-trading --swarm-run investment_committee '{"topic":"BTC outlook"}'</code></pre>
             `

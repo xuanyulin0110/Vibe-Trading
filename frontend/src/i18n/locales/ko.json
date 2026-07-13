@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v0.1.10"
+    "version": "v0.1.11"
   },
   "layout": {
     "home": "홈",
@@ -125,7 +125,8 @@
       "docWebResearch": "문서 & 웹 리서치",
       "tradeJournal": "매매 일지",
       "tradingConnectors": "트레이딩 커넥터",
-      "shadowAccount": "섀도우 계좌"
+      "shadowAccount": "섀도우 계좌",
+      "valueInvesting": "가치투자"
     },
     "examples": {
       "crossMarketPortfolio": "A주 포트폴리오 최적화",
@@ -138,6 +139,18 @@
       "multiFactorAlphaDesc": "300개 종목에 대한 IC 가중 팩터 합성",
       "optionsGreeks": "옵션 Greeks 분석",
       "optionsGreeksDesc": "Black-Scholes 가격 모델, Delta/Gamma/Theta/Vega 분석",
+      "valueCommittee": "가치투자 위원회",
+      "valueCommitteeDesc": "Buffett / Munger / Duan Yongping / Li Lu 네 관점으로 한 종목 토론",
+      "valueCommitteePrompt": "run_swarm으로 value_investing_committee 프리셋을 사용해 Tencent (00700.HK)를 분석하세요: Buffett은 moat와 가격, Munger는 역발상, Duan Yongping은 사업과 경영진, Li Lu는 10년 확실성을 평가하고 의장이 합의점과 모순을 종합하세요",
+      "bottleneckHunter": "공급망 병목 헌터",
+      "bottleneckHunterDesc": "슈퍼 트렌드의 Layer 2/3 병목에서 숨은 승자를 찾기",
+      "bottleneckHunterPrompt": "bottleneck-hunter 스킬을 사용해 AI 인프라(광통신 / 레이저 / InP 기판)의 Layer 2/3 공급망 병목 기회를 찾고, 각 병목을 점수화한 뒤 밸류에이션 게이트를 통과하는 후보 기업을 나열하세요",
+      "thesisTracker": "투자 테제 트래커",
+      "thesisTrackerDesc": "보유 종목에 대해 5문장 테제 + 레드라인 + 밸류에이션 앵커 작성",
+      "thesisTrackerPrompt": "thesis-tracker 스킬로 Kweichow Moutai (600519.SH)의 투자 테제를 작성하세요: 5문장 핵심 테제, 반증 가능한 가정, 레드라인, 밸류에이션 앵커를 financial_rigor로 검증하세요",
+      "valuationCheck": "정밀 밸류에이션 검산",
+      "valuationCheckDesc": "정확한 십진 연산으로 PE / PB / ROE / 시가총액 검증 (부동소수점 오차 없음)",
+      "valuationCheckPrompt": "financial_rigor 도구로 Kweichow Moutai의 밸류에이션을 검증하세요: 가격 1500, EPS 68.6, 주당순자산 180으로 PE, PB, ROE를 정확히 계산하고, 3년 3개 시나리오(성장률 12%/8%/0%, PE 22/18/14)도 계산하세요",
       "investmentCommittee": "투자 위원회 리뷰",
       "investmentCommitteeDesc": "멀티 에이전트 토론: 롱 vs 숏, 리스크 리뷰, PM 결정",
       "quantStrategyDesk": "퀀트 전략 데스크",
@@ -308,6 +321,29 @@
     "sessionRuntime": "세션 런타임",
     "flagsReadFrom": "플래그는 {{env_path}}의 {{env1}}, {{env2}}, {{env3}}에서 읽습니다."
   },
+  "qveris": {
+    "title": "QVeris 도구 마켓플레이스",
+    "subtitle": "무료 공개 데이터 경로를 기본으로 두고, 필요할 때만 QVeris 유료 실행을 켭니다.",
+    "enabled": "QVeris 유료 경로 활성화",
+    "baseUrl": "Base URL",
+    "apiKey": "API 키",
+    "apiKeyPlaceholder": "비우면 현재 키 유지",
+    "mode": "모드",
+    "modeFree": "무료 공개 데이터만 사용",
+    "modePaid": "QVeris 유료 활성화",
+    "budget": "세션당 예산 Credits",
+    "budgetHint": "이 세션 예산에 도달하면 유료 실행을 중지합니다.",
+    "balance": "남은 Credits",
+    "recentUsage": "최근 사용량",
+    "noUsage": "최근 사용량 없음",
+    "signupCta": "가입 열기",
+    "signupHint": "QVeris 계정을 만들 때 이 초대 코드를 사용하세요.",
+    "inviteCode": "초대 코드",
+    "save": "QVeris 설정 저장",
+    "saved": "QVeris 설정이 저장되었습니다",
+    "testFailed": "QVeris 요청 실패",
+    "notConfigured": "구성되지 않음"
+  },
   "agent": {
     "connectionLostReconnect": "연결이 끊겼습니다. 재연결 중…",
     "connectionRestored": "연결이 복원되었습니다",
@@ -327,6 +363,10 @@
     "cancelGoal": "목표 취소",
     "describeGoal": "이 세션에 첨부할 리서치 목표를 설명하세요",
     "placeholder": "예: 000001.SZ에 대한 듀얼 MA 크로스오버 전략을 만들고 2024년 백테스트 수행",
+    "send": "보내기",
+    "messageInputLabel": "에이전트에게 보낼 메시지",
+    "inputHint": "Enter로 전송 · Shift+Enter로 줄바꿈",
+    "editGoalObjectiveLabel": "리서치 목표 편집",
     "exportChat": "채팅 내보내기",
     "stopGeneration": "생성 중지",
     "runSwarmTeam": "Swarm 팀 실행",
@@ -425,6 +465,7 @@
     "compareCol": "비교 대상",
     "delta": "차이",
     "selectTwoRuns": "비교할 두 실행을 선택하세요.",
+    "loadError": "실행 데이터를 불러오지 못했습니다. 다시 시도해주세요.",
     "totalReturn": "총 수익률",
     "annualizedReturn": "연환산 수익률",
     "sharpeRatio": "Sharpe 비율",
@@ -455,9 +496,9 @@
   },
   "alphaZoo": {
     "title": "Alpha Zoo",
-    "prebuiltAlpha": "4개 Zoo에 걸친 {{count}}개의 사전 구축 퀀트 Alpha",
-    "prebuiltAlphaLoading": "4개 Zoo에 걸친 사전 구축 퀀트 Alpha",
-    "browseDesc": "Qlib, Kakushadze 101, GTJA 191 및 학술 이상 현상 문헌에서 포뮬러 기반의 횡단면 시그널을 살펴보세요. Alpha를 클릭하여 공식과 소스 코드를 확인하거나, 벤치를 실행하여 특정 유니버스와 기간에 대해 Zoo 전체를 스코어링할 수 있습니다.",
+    "prebuiltAlpha": "5개 Zoo에 걸친 {{count}}개의 사전 구축 퀀트 Alpha",
+    "prebuiltAlphaLoading": "5개 Zoo에 걸친 사전 구축 퀀트 Alpha",
+    "browseDesc": "Qlib, Kakushadze 101, GTJA 191, 학술 이상 현상 문헌 및 PIT-safe 펀더멘털에서 포뮬러 기반의 횡단면 시그널을 살펴보세요. Alpha를 클릭하여 공식과 소스 코드를 확인하거나, 벤치를 실행하여 특정 유니버스와 기간에 대해 Zoo 전체를 스코어링할 수 있습니다.",
     "search": "검색",
     "searchPlaceholder": "ID 또는 별명으로 필터…",
     "zoo": "Zoo",
@@ -539,13 +580,15 @@
       "qlib158": "Qlib 158",
       "alpha101": "Kakushadze 101 공식 Alpha",
       "gtja191": "GTJA 191",
-      "academic": "학술 이상 현상"
+      "academic": "학술 이상 현상",
+      "fundamental": "펀더멘털 (PIT-safe)"
     },
     "zooCardDesc": {
       "qlib158": "Microsoft Qlib의 전체 158개 피처 라이브러리. 모멘텀, 변동성, 거래량 및 롤링 통계 시그널을 포함합니다.",
       "alpha101": "Kakushadze(2015)의 101개 공식 alpha 시그널. 단기 횡단면 시그널.",
       "gtja191": "궈타이쥔안증권의 191개 Alpha. 중국 A주 시장에 최적화된 기술적 및 마이크로스트럭처 시그널.",
-      "academic": "학술 문헌에서 선별된 장기 이상 현상(가치, 모멘텀, 품질, 저변동성 등)."
+      "academic": "학술 문헌에서 선별된 장기 이상 현상(가치, 모멘텀, 품질, 저변동성 등).",
+      "fundamental": "PIT-safe SEC company facts로 계산되는 퀄리티·밸류 팩터 — earnings yield, ROE, gross profitability, asset growth (filed-date 기준)."
     },
     "universeOption": {
       "csi300": "CSI 300 (중국 A주)",
@@ -679,7 +722,11 @@
     "leverageValue": "{{value}}× 레버리지",
     "tradesPerDay": "일 {{count}}건 거래",
     "adjustTitle": "이 mandate 조정",
-    "adjustPlaceholder": "예: 유지하되 일일 한도를 10으로 상향"
+    "adjustPlaceholder": "예: 유지하되 일일 한도를 10으로 상향",
+    "adjustInputLabel": "조정 요청 내용",
+    "confirmTitle": "mandate 커밋 확인",
+    "confirmDescription": "커밋하면 아래 한도로 에이전트에게 즉시 거래 권한이 부여됩니다.",
+    "confirmButton": "확인 후 커밋"
   },
   "messageBubble": {
     "copied": "복사됨",
@@ -711,7 +758,16 @@
     "featureStreaming": "실시간 스트리밍",
     "featureStreamingDesc": "에이전트의 사고, 도구 호출, 반복 과정을 지켜보세요",
     "featureReplay": "전략 리플레이",
-    "featureReplayDesc": "매매 일지 분석 + 섀도우 계좌 — 규칙 추출, 백테스트, PnL 차이 귀인 분석"
+    "featureReplayDesc": "매매 일지 분석 + 섀도우 계좌 — 규칙 추출, 백테스트, PnL 차이 귀인 분석",
+    "howItWorksTitle": "사용 방법",
+    "step1Title": "1. 전략을 설명하세요",
+    "step1Desc": "코드 없이 자연어로 테스트하고 싶은 내용을 에이전트에게 전달하세요.",
+    "step2Title": "2. 리서치와 백테스트 과정을 지켜보세요",
+    "step2Desc": "에이전트가 계획을 세우고 시장 데이터를 가져와 실시간으로 백테스트를 실행합니다.",
+    "step3Title": "3. 결과를 확인하세요",
+    "step3Desc": "성과 지표, 자산 곡선, 내보내기 가능한 Pine Script를 확인할 수 있습니다.",
+    "step4Title": "4. 준비되면 실전으로",
+    "step4Desc": "한도가 명시된 거래 mandate를 선택적으로 승인하세요 — 확인 없이는 어떤 주문도 실행되지 않습니다."
   },
   "errorBoundary": {
     "somethingWrong": "문제가 발생했습니다"

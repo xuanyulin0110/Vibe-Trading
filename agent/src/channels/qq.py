@@ -409,7 +409,20 @@ class QQChannel(BaseChannel):
         if not self._http:
             self._http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120))
         try:
-            async with self._http.get(media_ref, allow_redirects=True) as resp:
+            # Do not auto-follow redirects: ``media_ref`` is agent-controlled
+            # (taken from ``msg.media``), and a public URL that 302s to an
+            # internal address (169.254.169.254, 100.64/10, …) would bypass the
+            # pre-flight ``validate_url_target`` check and exfiltrate internal
+            # content as a media attachment. Fail closed on 3xx instead — this
+            # mirrors napcat.py's inbound image download.
+            async with self._http.get(media_ref, allow_redirects=False) as resp:
+                if 300 <= resp.status < 400:
+                    self.logger.warning(
+                        "outbound media download redirect rejected url={} status={}",
+                        media_ref,
+                        resp.status,
+                    )
+                    return None, None
                 if resp.status >= 400:
                     self.logger.warning(
                         "outbound media download failed status={} url={}",

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -145,7 +144,9 @@ def main() -> int:
         "zoos": {},
     }
 
-    tushare_ok = bool(os.getenv("TUSHARE_TOKEN", "").strip())
+    from src.config.accessor import get_env_config
+
+    tushare_ok = bool(get_env_config().data.tushare_token)
     if not tushare_ok:
         logger.warning("TUSHARE_TOKEN unset; csi300 benches will be skipped")
 

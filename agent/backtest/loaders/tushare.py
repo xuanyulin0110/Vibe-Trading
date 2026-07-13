@@ -4,7 +4,7 @@ Supports ``interval``: 1D (default) / 1m / 5m / 15m / 30m / 1H.
 Minute data uses ``pro.stk_mins()`` (Tushare points >= 2000).
 """
 
-import os
+import logging
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -12,6 +12,8 @@ import pandas as pd
 from backtest.loaders._symbol_utils import _is_etf_listed
 from backtest.loaders.base import cached_loader_fetch, validate_date_range
 from backtest.loaders.registry import register
+
+logger = logging.getLogger(__name__)
 
 
 TUSHARE_TOKEN_PLACEHOLDERS = {"", "your-tushare-token"}
@@ -55,13 +57,17 @@ class DataLoader:
 
     def is_available(self) -> bool:
         """Available when TUSHARE_TOKEN is set."""
-        return os.getenv("TUSHARE_TOKEN", "").strip() not in TUSHARE_TOKEN_PLACEHOLDERS
+        from src.config.accessor import get_env_config
+
+        return get_env_config().data.tushare_token.strip() not in TUSHARE_TOKEN_PLACEHOLDERS
 
     def __init__(self) -> None:
         """Initialize Tushare pro API."""
         import tushare as ts
 
-        token = os.getenv("TUSHARE_TOKEN", "")
+        from src.config.accessor import get_env_config
+
+        token = get_env_config().data.tushare_token
         self.api = ts.pro_api(token)
 
     def fetch(
@@ -69,8 +75,9 @@ class DataLoader:
         codes: List[str],
         start_date: str,
         end_date: str,
-        fields: Optional[List[str]] = None,
+        *,
         interval: str = "1D",
+        fields: Optional[List[str]] = None,
     ) -> Dict[str, pd.DataFrame]:
         """Fetch A-share bars via Tushare API.
 
@@ -108,7 +115,7 @@ class DataLoader:
                     )
                     return merged.get(code)
                 except Exception as exc:
-                    print(f"[WARN] failed to fetch {code}: {exc}")
+                    logger.warning("failed to fetch %s: %s", code, exc)
                     return None
 
             df = cached_loader_fetch(
@@ -133,7 +140,7 @@ class DataLoader:
     ) -> Optional[pd.DataFrame]:
         """Fetch and normalize one daily OHLCV frame, routing by symbol type."""
         if _is_us_equity(code) or _is_crypto(code):
-            print(f"[WARN] tushare does not support {code} (US/crypto); skipping")
+            logger.warning("tushare does not support %s (US/crypto); skipping", code)
             return None
 
         if _is_etf_listed(code):
@@ -150,7 +157,7 @@ class DataLoader:
             df = self.api.daily(ts_code=code, start_date=start_date, end_date=end_date)
 
         if df is None or df.empty:
-            print(f"[WARN] tushare returned empty for {code} via {endpoint_name}")
+            logger.warning("tushare returned empty for %s via %s", code, endpoint_name)
             return None
         df = df.sort_values("trade_date")
         df["trade_date"] = pd.to_datetime(df["trade_date"])
@@ -215,7 +222,7 @@ class DataLoader:
                         if f in basic.columns:
                             result[code][f] = basic[f]
             except Exception as exc:
-                print(f"[WARN] daily_basic for {code} failed: {exc}")
+                logger.warning("daily_basic for %s failed: %s", code, exc)
 
         return result
 
@@ -240,7 +247,7 @@ class DataLoader:
         freq_map = {"1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min", "1H": "60min"}
         freq = freq_map.get(interval)
         if not freq:
-            print(f"[ERROR] unsupported Tushare interval: {interval}")
+            logger.error("unsupported Tushare interval: %s", interval)
             return {}
 
         sd = start_date.replace("-", "")
@@ -250,7 +257,7 @@ class DataLoader:
         for code in codes:
             if _is_etf_listed(code):
                 # tushare has no fund_mins endpoint; ETF intraday is unavailable
-                print(f"[WARN] tushare does not support intraday data for {code} (ETF); skipping")
+                logger.warning("tushare does not support intraday data for %s (ETF); skipping", code)
                 continue
             if _is_index(code) or _is_hk_equity(code) or _is_us_equity(code) or _is_crypto(code):
                 sym_type = (
@@ -259,12 +266,12 @@ class DataLoader:
                     else "US" if _is_us_equity(code)
                     else "crypto"
                 )
-                print(f"[WARN] tushare does not support intraday data for {code} ({sym_type}); skipping")
+                logger.warning("tushare does not support intraday data for %s (%s); skipping", code, sym_type)
                 continue
             try:
                 df = self.api.stk_mins(ts_code=code, freq=freq, start_date=sd, end_date=ed)
                 if df is None or df.empty:
-                    print(f"[WARN] empty Tushare minute data: {code} (points >= 2000 required)")
+                    logger.warning("empty Tushare minute data: %s (points >= 2000 required)", code)
                     continue
                 df = df.sort_values("trade_time")
                 df["trade_date"] = pd.to_datetime(df["trade_time"])
@@ -278,5 +285,5 @@ class DataLoader:
                 )
                 result[code] = ohlcv
             except Exception as exc:
-                print(f"[WARN] failed to fetch minute data {code}: {exc}")
+                logger.warning("failed to fetch minute data %s: %s", code, exc)
         return result

@@ -51,6 +51,8 @@ VALID_SOURCES: set[str] = {
     "finlab",
     "shioaji",
     "shioaji_futures",
+    "qveris",  # QVERIS-INTEGRATION
+    "india_broker",
     "local",
     "auto",
 }
@@ -98,6 +100,8 @@ def _ensure_registered() -> None:
         "backtest.loaders.finlab_loader",
         "backtest.loaders.shioaji_loader",
         "backtest.loaders.shioaji_futures_loader",
+        "backtest.loaders.qveris_loader",  # QVERIS-INTEGRATION
+        "backtest.loaders.india_broker_loader",
         "backtest.loaders.local_loader",
     ]
     import importlib
@@ -115,7 +119,7 @@ def _ensure_registered() -> None:
 # unavailable ``local`` request can degrade into an unrelated network source.
 # An explicit ``local`` request that is unavailable is a config problem the user
 # must see, not something to paper over with a Yahoo/Tencent fetch.
-_NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset({"local"})
+_NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset({"local", "qveris"})  # QVERIS-INTEGRATION
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +137,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "tw_futures": ["shioaji_futures", "local"],
     "us_equity": ["yahoo", "stooq", "sina", "eastmoney", "yfinance", "tiingo", "fmp", "finnhub", "alphavantage", "akshare", "local"],
     "hk_equity": ["eastmoney", "yahoo", "futu", "yfinance", "akshare", "local"],
+    "india_equity": ["yahoo", "yfinance", "india_broker", "local"],
     "crypto":    ["okx", "ccxt", "yfinance", "local"],
     "futures":   ["tushare", "akshare", "local"],
     "fund":      ["tushare", "akshare", "local"],

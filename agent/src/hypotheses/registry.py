@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.config.accessor import get_env_config
+
 HYPOTHESIS_STATUSES = (
     "exploring",
     "testing",
@@ -34,7 +36,7 @@ def default_hypotheses_path() -> Path:
         Env override path when ``VIBE_TRADING_HYPOTHESES_PATH`` is set,
         otherwise ``~/.vibe-trading/hypotheses.json``.
     """
-    override = os.environ.get(_ENV_PATH, "").strip()
+    override = get_env_config().paths.vibe_trading_hypotheses_path.strip()
     if override:
         return Path(override).expanduser()
     return Path.home() / ".vibe-trading" / "hypotheses.json"

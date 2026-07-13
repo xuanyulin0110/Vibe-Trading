@@ -9,6 +9,15 @@
     "api_key_required": true
   },
   {
+    "name": "requesty",
+    "label": "Requesty",
+    "api_key_env": "REQUESTY_API_KEY",
+    "base_url_env": "REQUESTY_BASE_URL",
+    "default_model": "openai/gpt-4o-mini",
+    "default_base_url": "https://router.requesty.ai/v1",
+    "api_key_required": true
+  },
+  {
     "name": "openai",
     "label": "OpenAI",
     "api_key_env": "OPENAI_API_KEY",
@@ -22,7 +31,7 @@
     "label": "OpenAI Codex (ChatGPT OAuth)",
     "api_key_env": null,
     "base_url_env": "OPENAI_CODEX_BASE_URL",
-    "default_model": "openai-codex/gpt-5.3-codex",
+    "default_model": "openai-codex/gpt-5.4",
     "default_base_url": "https://chatgpt.com/backend-api/codex/responses",
     "api_key_required": false,
     "auth_type": "oauth",
@@ -98,6 +107,15 @@
     "base_url_env": "MOONSHOT_BASE_URL",
     "default_model": "kimi-k2.6",
     "default_base_url": "https://api.moonshot.ai/v1",
+    "api_key_required": true
+  },
+  {
+    "name": "kimi-coding",
+    "label": "Kimi for Coding (subscription plan)",
+    "api_key_env": "KIMI_CODING_API_KEY",
+    "base_url_env": "KIMI_CODING_BASE_URL",
+    "default_model": "kimi-for-coding",
+    "default_base_url": "https://api.kimi.com/coding/v1",
     "api_key_required": true
   },
   {

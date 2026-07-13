@@ -61,7 +61,9 @@ def _is_dark_terminal(console: Console) -> bool:
         ``True`` if dark mode should be assumed.
     """
 
-    override = os.environ.get("VIBE_TRADING_THEME", "").strip().lower()
+    from src.config.accessor import get_env_config
+
+    override = get_env_config().paths.vibe_trading_theme.strip().lower()
     if override in {"dark", "light"}:
         return override == "dark"
 
@@ -70,13 +72,13 @@ def _is_dark_terminal(console: Console) -> bool:
         # to ANSI later, but in practice nothing will be coloured.
         return True
 
-    colorfgbg = os.environ.get("COLORFGBG", "")
+    colorfgbg = os.environ.get("COLORFGBG", "")  # noqa: env-gate — terminal capability detection
     if ";" in colorfgbg:
         bg = colorfgbg.split(";")[-1].strip()
         if bg.isdigit():
             return int(bg) in {0, 1, 2, 3, 4, 5, 6, 7, 8}  # low ANSI ⇒ dark
 
-    if os.environ.get("TERM_PROGRAM", "").lower() == "apple_terminal":
+    if os.environ.get("TERM_PROGRAM", "").lower() == "apple_terminal":  # noqa: env-gate — terminal capability detection
         return True
 
     return True

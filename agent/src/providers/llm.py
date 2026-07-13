@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from pydantic import PrivateAttr
 
+from src.config.accessor import get_env_config, reset_env_config
 from src.providers.capabilities import get_provider_capabilities, provider_env_names
 
 try:
@@ -356,7 +357,7 @@ def _package_version(package: str) -> str:
 
 def _redact_env_flag(name: str) -> str:
     """Report whether an env var is set without exposing its value."""
-    value = os.getenv(name, "")
+    value = os.getenv(name, "")  # noqa: env-gate — diagnostic redaction helper
     return "set" if value else "unset"
 
 
@@ -371,7 +372,7 @@ def _redact_proxy_url(name: str, raw: str | None) -> str:
 
 def _deepseek_adapter_mode() -> str:
     """Return the configured DeepSeek adapter mode."""
-    mode = os.getenv("VIBE_TRADING_DEEPSEEK_ADAPTER", "auto").strip().lower()
+    mode = get_env_config().llm.vibe_trading_deepseek_adapter.strip().lower()
     aliases = {
         "compat": "openai-compatible",
         "compatible": "openai-compatible",
@@ -401,13 +402,13 @@ def _build_native_deepseek(
         return None
 
     key_env, base_env = provider_env_names("deepseek", model)
-    api_key = os.getenv(key_env or "", "") or os.getenv("OPENAI_API_KEY", "")
-    base_url = os.getenv(base_env, "") or os.getenv("OPENAI_BASE_URL", "") or os.getenv("OPENAI_API_BASE", "")
+    api_key = os.getenv(key_env or "", "") or os.getenv("OPENAI_API_KEY", "")  # noqa: env-gate — dynamic provider key resolution
+    base_url = os.getenv(base_env, "") or os.getenv("OPENAI_BASE_URL", "") or os.getenv("OPENAI_API_BASE", "")  # noqa: env-gate — dynamic provider URL resolution
     return chat_deepseek(
         model=model,
         temperature=temperature,
-        timeout=int(os.getenv("TIMEOUT_SECONDS", "120")),
-        max_retries=int(os.getenv("MAX_RETRIES", "2")),
+        timeout=get_env_config().llm.timeout_seconds,
+        max_retries=get_env_config().llm.max_retries,
         callbacks=callbacks,
         api_key=api_key or None,
         base_url=base_url or None,
@@ -447,9 +448,9 @@ def _ensure_dotenv() -> None:
     logger.info(
         "dotenv resolved from %s | provider=%s model=%s base=%s",
         _redact_env_source(loaded),
-        os.getenv("LANGCHAIN_PROVIDER", "(unset)"),
-        os.getenv("LANGCHAIN_MODEL_NAME", "(unset)"),
-        _redact_base_url_for_log(os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")),
+        get_env_config().llm.langchain_provider,
+        get_env_config().llm.langchain_model_name or "(unset)",
+        _redact_base_url_for_log(os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")),  # noqa: env-gate — diagnostic display
     )
 
 
@@ -471,33 +472,36 @@ def _sync_provider_env() -> None:
     api_key_env=None means no key required (e.g. Ollama local).
     """
     _ensure_dotenv()
-    provider = os.getenv("LANGCHAIN_PROVIDER", "openai").lower()
+    reset_env_config()
+    provider = get_env_config().llm.langchain_provider.lower()
 
     if provider in {"openai-codex", "openai_codex"}:
-        codex_url = os.getenv("OPENAI_CODEX_BASE_URL", "https://chatgpt.com/backend-api/codex/responses")
+        codex_url = get_env_config().llm.openai_codex_base_url
+        # SDK-side env setup, not Vibe-Trading config reads
         os.environ["OPENAI_API_BASE"] = codex_url
         os.environ["OPENAI_BASE_URL"] = codex_url
         os.environ.pop("OPENAI_API_KEY", None)
         return
 
-    key_env, base_env = provider_env_names(provider, os.getenv("LANGCHAIN_MODEL_NAME", ""))
+    key_env, base_env = provider_env_names(provider, get_env_config().llm.langchain_model_name)
 
     # Resolve API key: provider-specific env → OPENAI_API_KEY fallback
     if key_env is not None:
-        api_key = os.getenv(key_env, "") or os.getenv("OPENAI_API_KEY", "")
+        api_key = os.getenv(key_env, "") or os.getenv("OPENAI_API_KEY", "")  # noqa: env-gate — dynamic provider key fallback
     else:
-        api_key = os.getenv("OPENAI_API_KEY", "") or "ollama"
+        api_key = os.getenv("OPENAI_API_KEY", "") or "ollama"  # noqa: env-gate — ollama default key
 
     # Resolve base URL: provider-specific env → OPENAI_BASE_URL fallback
-    base_url = os.getenv(base_env, "") or os.getenv("OPENAI_BASE_URL", "") or os.getenv("OPENAI_API_BASE", "")
+    base_url = os.getenv(base_env, "") or os.getenv("OPENAI_BASE_URL", "") or os.getenv("OPENAI_API_BASE", "")  # noqa: env-gate — dynamic provider URL chain
     if provider == "ollama" and base_url:
         base_url = _normalize_ollama_base_url(base_url)
 
+    # SDK-side env setup, not Vibe-Trading config reads
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
     if base_url:
         os.environ["OPENAI_API_BASE"] = base_url
-        os.environ.setdefault("OPENAI_BASE_URL", base_url)
+        os.environ["OPENAI_BASE_URL"] = base_url
 
 
 def provider_diagnostics() -> dict[str, Any]:
@@ -507,11 +511,11 @@ def provider_diagnostics() -> dict[str, Any]:
         Redacted provider/model/package/env/proxy/capability details.
     """
     _sync_provider_env()
-    provider = os.getenv("LANGCHAIN_PROVIDER", "openai").strip().lower()
-    model = os.getenv("LANGCHAIN_MODEL_NAME", "").strip()
+    provider = get_env_config().llm.langchain_provider.strip().lower()
+    model = get_env_config().llm.langchain_model_name.strip()
     caps = get_provider_capabilities(provider, model)
     key_env, base_env = provider_env_names(provider, model)
-    base_url = os.getenv(base_env, "") or os.getenv("OPENAI_BASE_URL", "") or os.getenv("OPENAI_API_BASE", "")
+    base_url = os.getenv(base_env, "") or os.getenv("OPENAI_BASE_URL", "") or os.getenv("OPENAI_API_BASE", "")  # noqa: env-gate — dynamic provider URL resolution
     proxy_names = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"]
     package_names = ["langchain-openai", "langchain-core", "langchain", "openai", "langchain-deepseek"]
     native_package_version = (
@@ -536,18 +540,18 @@ def provider_diagnostics() -> dict[str, Any]:
             "LANGCHAIN_PROVIDER": _redact_env_flag("LANGCHAIN_PROVIDER"),
             "LANGCHAIN_MODEL_NAME": _redact_env_flag("LANGCHAIN_MODEL_NAME"),
             "OPENAI_API_KEY": _redact_env_flag("OPENAI_API_KEY"),
-            "OPENAI_BASE_URL": _redact_base_url_for_log(os.getenv("OPENAI_BASE_URL")),
-            "OPENAI_API_BASE": _redact_base_url_for_log(os.getenv("OPENAI_API_BASE")),
+            "OPENAI_BASE_URL": _redact_base_url_for_log(os.getenv("OPENAI_BASE_URL")),  # noqa: env-gate — diagnostic snapshot
+            "OPENAI_API_BASE": _redact_base_url_for_log(os.getenv("OPENAI_API_BASE")),  # noqa: env-gate — diagnostic snapshot
         },
         "proxy": {
-            name: _redact_proxy_url(name, os.getenv(name))
+            name: _redact_proxy_url(name, os.getenv(name))  # noqa: env-gate — proxy env iteration
             for name in proxy_names
-            if os.getenv(name)
+            if os.getenv(name)  # noqa: env-gate — proxy env filter
         },
         "packages": {name: _package_version(name) for name in package_names},
-        "timeout_seconds": int(os.getenv("TIMEOUT_SECONDS", "120")),
-        "max_retries": int(os.getenv("MAX_RETRIES", "2")),
-        "reasoning_effort": os.getenv("LANGCHAIN_REASONING_EFFORT", "").strip().lower(),
+        "timeout_seconds": get_env_config().llm.timeout_seconds,
+        "max_retries": get_env_config().llm.max_retries,
+        "reasoning_effort": get_env_config().llm.langchain_reasoning_effort.strip().lower(),
         "adapter": {
             "type": adapter_type,
             "mode": adapter_mode,
@@ -577,20 +581,20 @@ def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any
         RuntimeError: If langchain-openai is missing or LANGCHAIN_MODEL_NAME is unset.
     """
     _sync_provider_env()
-    name = model_name or os.getenv("LANGCHAIN_MODEL_NAME", "").strip()
+    name = model_name or get_env_config().llm.langchain_model_name.strip()
     if not name:
         raise RuntimeError("LANGCHAIN_MODEL_NAME is not set")
-    temperature = float(os.getenv("LANGCHAIN_TEMPERATURE", "0.0"))
-    provider = os.getenv("LANGCHAIN_PROVIDER", "openai").lower()
+    temperature = get_env_config().llm.langchain_temperature
+    provider = get_env_config().llm.langchain_provider.lower()
     caps = get_provider_capabilities(provider, name)
     if provider in {"openai-codex", "openai_codex"}:
         from src.providers.openai_codex import OpenAICodexLLM
 
-        effort = os.getenv("LANGCHAIN_REASONING_EFFORT", "").strip().lower()
+        effort = get_env_config().llm.langchain_reasoning_effort.strip().lower()
         return OpenAICodexLLM(
             model=name,
             temperature=temperature,
-            timeout=int(os.getenv("TIMEOUT_SECONDS", "120")),
+            timeout=get_env_config().llm.timeout_seconds,
             reasoning_effort=effort or None,
         )
 
@@ -615,27 +619,31 @@ def build_llm(*, model_name: Optional[str] = None, callbacks: Any = None) -> Any
     # default 0.0 is used to avoid an API validation error.
     if provider == "minimax" and temperature <= 0.0:
         temperature = 0.01
-    # Moonshot kimi-k2.x reasoning models reject any temperature other than 1
+    # Kimi reasoning models reject any temperature other than 1
     # ("invalid temperature: only 1 is allowed for this model").
-    if caps.name == "moonshot" and name.lower().startswith("kimi-k2") and temperature != 1.0:
+    if (
+        caps.name in {"moonshot", "kimi-coding"}
+        and name.lower().startswith(("kimi-k2", "kimi-for-coding"))
+        and temperature != 1.0
+    ):
         logger.info("Forcing temperature=1.0 for %s (provider requirement)", name)
         temperature = 1.0
     # Optional reasoning activation for relays requiring opt-in (e.g. OpenRouter).
     # Moonshot/DeepSeek official APIs emit reasoning by default and ignore this field.
-    effort = os.getenv("LANGCHAIN_REASONING_EFFORT", "").strip().lower()
+    effort = get_env_config().llm.langchain_reasoning_effort.strip().lower()
     kwargs: dict[str, Any] = {
         "model": name,
         "temperature": temperature,
-        "timeout": int(os.getenv("TIMEOUT_SECONDS", "120")),
-        "max_retries": int(os.getenv("MAX_RETRIES", "2")),
+        "timeout": get_env_config().llm.timeout_seconds,
+        "max_retries": get_env_config().llm.max_retries,
         "callbacks": callbacks,
         "extra_body": {"reasoning": {"effort": effort}} if effort and caps.openrouter_reasoning_body else None,
         "vibe_provider": provider,
     }
     if caps.default_headers:
         headers = dict(caps.default_headers)
-        if caps.name == "moonshot":
-            custom_ua = os.getenv("MOONSHOT_USER_AGENT", "").strip()
+        if caps.name in {"moonshot", "kimi-coding"}:
+            custom_ua = get_env_config().llm.moonshot_user_agent.strip()
             if custom_ua:
                 headers["User-Agent"] = custom_ua
         kwargs["default_headers"] = headers

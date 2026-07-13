@@ -167,8 +167,8 @@ Self-check after writing `signal_engine.py`:
   - Minute backtests can be very data-heavy. Recommended limits are no more than 30 days for `1m`, or 1 year for `1H`
 - `extra_fields`: China A-shares can use values such as `["pe", "pb", "roe"]`; other markets (including Taiwan) should use `null`
 - `fundamental_fields`: optional statement/chip pre-filter fields, table name -> field list. China A-shares: `{"income": ["total_revenue", "n_income"], "fina_indicator": ["roe"]}`. Taiwan equities/futures: `{"institutional": ["foreign_net"], "monthly_revenue": ["revenue_yoy_pct"], "fundamental_features": ["roe"]}` (see "Market Detection and Data Sources" for the full TW table list). `null` unless the strategy needs financial-statement/chip pre-filtering.
-- `optimizer`: optional, one of `"equal_volatility"` / `"risk_parity"` / `"mean_variance"` / `"max_diversification"` / `null` (equal-weight by default)
-- `optimizer_params`: optimizer parameters, such as `{"lookback": 60}`. `mean_variance` additionally supports `{"risk_free": 0.0}`
+- `optimizer`: optional, one of `"equal_volatility"` / `"risk_parity"` / `"mean_variance"` / `"max_diversification"` / `"turnover_aware"` / `null` (equal-weight by default)
+- `optimizer_params`: optimizer parameters, such as `{"lookback": 60}`. `mean_variance` additionally supports `{"risk_free": 0.0}`; `turnover_aware` supports `{"risk_aversion": 1.0, "turnover_penalty": 0.5}` (L1 penalty on weight changes; tune to data frequency)
 - `engine`: backtest engine, default `"daily"`. For options strategies, set `"options"` (requires `OptionsSignalEngine`)
 - `initial_cash`: default 1,000,000
 - `commission`: default 0.1%

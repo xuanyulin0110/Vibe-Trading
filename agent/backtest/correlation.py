@@ -6,30 +6,82 @@ over a configurable lookback window. Used by the /correlation API endpoint.
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, Literal
 
 import pandas as pd
 import numpy as np
 from scipy.stats import spearmanr
 
+logger = logging.getLogger(__name__)
+
 
 def infer_market(code: str) -> str:
-    """Infer market key from a ticker symbol."""
-    code_upper = code.upper()
+    """Infer market key from a ticker symbol.
+
+    Resolution order:
+
+    1. Crypto pair spellings (``BTC-USDT``, ``ETH/USD`` …).
+    2. Explicit exchange suffix — always authoritative (``.HK``, ``.SH``/
+       ``.SZ``/``.BJ``, ``.US``). Bare HK and A-share codes are both purely
+       numeric, so the suffix is the only reliable disambiguator.
+    3. Bare numeric codes by digit length: A-share codes are exactly 6 digits
+       (600000, 000001, 300750, 688981, 830799); HK codes are at most 5
+       (700, 0700, 9988, 3690). Prefix alone cannot tell them apart — both
+       markets use leading 0 and 3.
+    4. Anything else (alphabetic tickers) is a US equity.
+    """
+    code_upper = code.strip().upper()
     crypto_suffixes = ("USDT", "BTC", "ETH", "BNB", "SOL", "ADA", "DOGE")
     if any(code_upper.endswith(s) for s in crypto_suffixes) or "/" in code:
         return "crypto"
-    # Check .HK suffix FIRST so leading-zero tickers like 0700.HK / 0005.HK
-    # are correctly classified before the A-share prefix checks
     if code_upper.endswith(".HK"):
         return "hk_equity"
-    if code_upper.startswith(("6", "000", "001", "002")):
+    if code_upper.endswith((".SH", ".SZ", ".BJ")):
         return "a_share"
-    if code_upper.startswith(("0", "399")):
-        return "a_share"
-    if code_upper.startswith(("0", "1", "2", "3", "4")):
-        return "hk_equity"
+    if code_upper.endswith(".US"):
+        return "us_equity"
+    if code_upper.isdigit():
+        if len(code_upper) == 6:
+            return "a_share"
+        if len(code_upper) <= 5:
+            return "hk_equity"
     return "us_equity"
+
+
+def _normalize_symbol(code: str, market: str) -> str:
+    """Convert a user-supplied code to the project's canonical loader symbol.
+
+    The data loaders key US/HK/A-share instruments by an exchange-suffixed
+    symbol (``AAPL.US``, ``0700.HK``, ``600000.SH``); a bare ticker such as
+    ``AAPL`` or ``600000`` matches no loader and fetches nothing. Crypto pairs
+    (``BTC-USDT``) are already canonical, and any code that already carries a
+    ``.`` suffix is left untouched.
+
+    Args:
+        code: The raw code as typed by the user (e.g. ``AAPL``, ``600000``).
+        market: The market key from :func:`infer_market`.
+
+    Returns:
+        The canonical symbol the market's loaders expect.
+    """
+    cleaned = code.strip()
+    # Crypto pairs and anything already exchange-qualified pass through as-is.
+    if market == "crypto" or "." in cleaned:
+        return cleaned
+    upper = cleaned.upper()
+    if market == "us_equity":
+        return f"{upper}.US"
+    if market == "hk_equity":
+        return f"{upper}.HK"
+    if market == "a_share":
+        # 6xxxxx -> Shanghai; 4xxxxx / 8xxxxx -> Beijing; else (0/3) Shenzhen.
+        if upper[:1] == "6":
+            return f"{upper}.SH"
+        if upper[:1] in ("4", "8"):
+            return f"{upper}.BJ"
+        return f"{upper}.SZ"
+    return cleaned
 
 
 def _rolling_correlation_matrix(
@@ -140,37 +192,54 @@ def compute_correlation_matrix(
     start_date = (datetime.now() - timedelta(days=days + 60)).strftime("%Y-%m-%d")
 
     # Import here to avoid circular
-    from backtest.loaders.registry import resolve_loader
+    from backtest.loaders import registry
 
+    registry._ensure_registered()
     price_series: Dict[str, pd.DataFrame] = {}
 
     for code in codes:
         market = infer_market(code)
-        try:
-            loader = resolve_loader(market)
-        except Exception:
-            # Fall back to yfinance for us_equity / hk_equity
-            try:
-                from backtest.loaders.registry import LOADER_REGISTRY
-                if "yfinance" in LOADER_REGISTRY:
-                    loader = LOADER_REGISTRY["yfinance"]()
-                else:
-                    continue
-            except Exception:
-                continue
+        # Loaders key instruments by the canonical exchange-suffixed symbol
+        # (AAPL.US / 600000.SH); a bare ticker fetches nothing. Fetch under the
+        # normalized symbol but keep the user's original code as the label.
+        symbol = _normalize_symbol(code, market)
 
-        try:
-            result = loader.fetch(
-                codes=[code],
-                start_date=start_date,
-                end_date=end_date,
-                interval="1D",
-                fields=["trade_date", "open", "high", "low", "close", "volume"],
+        # Walk the market's full fallback chain until a loader actually
+        # returns data. A loader can be "available" yet still serve nothing
+        # (network error, unsupported symbol), so stopping at the first
+        # available loader — as resolve_loader does — would silently drop
+        # the asset even when a later loader could serve it.
+        for name in registry.FALLBACK_CHAINS.get(market, []):
+            loader_cls = registry.LOADER_REGISTRY.get(name)
+            if loader_cls is None:
+                continue
+            try:
+                loader = loader_cls()
+            except Exception as exc:
+                logger.debug("correlation: loader %s failed to construct: %s", name, exc)
+                continue
+            if not loader.is_available():
+                continue
+            try:
+                result = loader.fetch(
+                    codes=[symbol],
+                    start_date=start_date,
+                    end_date=end_date,
+                    interval="1D",
+                    fields=["trade_date", "open", "high", "low", "close", "volume"],
+                )
+            except Exception as exc:
+                logger.warning("correlation: %s fetch via %s failed: %s", symbol, name, exc)
+                continue
+            if symbol in result and not result[symbol].empty:
+                price_series[code] = result[symbol]
+                break
+            logger.warning("correlation: %s returned no data via %s", symbol, name)
+        else:
+            logger.warning(
+                "correlation: no loader in the %s chain returned data for %s "
+                "(normalized from %r)", market, symbol, code,
             )
-            if code in result and not result[code].empty:
-                price_series[code] = result[code]
-        except Exception:
-            continue
 
     if len(price_series) < 2:
         raise ValueError(
