@@ -211,7 +211,10 @@ def clear_stale_shioaji_locks(max_age_seconds: float = _STALE_LOCK_SECONDS) -> N
     repeatedly in testing. Only locks older than ``max_age_seconds`` are
     removed, so a genuinely concurrent in-progress download is not disturbed.
     """
-    home = Path(os.environ.get("SJ_HOME_PATH") or (Path.home() / ".shioaji"))
+    from src.config.accessor import get_env_config
+
+    home_override = get_env_config().data.sj_home_path
+    home = Path(home_override) if home_override else Path.home() / ".shioaji"
     if not home.is_dir():
         return
     now = time.time()
@@ -294,7 +297,9 @@ _MINUTE_CACHE_FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 def _minute_cache_enabled() -> bool:
-    return os.getenv(MINUTE_CACHE_ENV, "").strip().lower() not in _MINUTE_CACHE_FALSE_VALUES
+    from src.config.accessor import get_env_config
+
+    return get_env_config().data.shioaji_minute_cache.strip().lower() not in _MINUTE_CACHE_FALSE_VALUES
 
 
 def _minute_cache_path(source: str, symbol: str) -> Path:

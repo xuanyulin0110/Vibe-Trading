@@ -151,16 +151,6 @@ def config_path() -> Path:
     return get_runtime_root() / CONFIG_FILENAME
 
 
-#: Env fallbacks for secrets not present in shioaji.json -- keeps credentials
-#: in agent/.env alongside every other secret (FINLAB_API_TOKEN,
-#: TELEGRAM_BOT_TOKEN) as the primary path; shioaji.json remains for anyone
-#: who prefers a dedicated file or a non-default profile per field.
-_ENV_API_KEY = "SJ_API_KEY"
-_ENV_SECRET_KEY = "SJ_SEC_KEY"
-_ENV_CA_PATH = "SJ_CA_PATH"
-_ENV_CA_PASSWD = "SJ_CA_PASSWD"
-
-
 def load_config() -> ShioajiConfig:
     """Load Shioaji settings: ``~/.vibe-trading/shioaji.json`` <- env fallback.
 
@@ -182,15 +172,22 @@ def load_config() -> ShioajiConfig:
 
 
 def _apply_env_fallback(cfg: ShioajiConfig) -> ShioajiConfig:
+    # SJ_* env vars fill fields shioaji.json leaves empty -- keeps credentials
+    # in agent/.env alongside every other secret (FINLAB_API_TOKEN,
+    # TELEGRAM_BOT_TOKEN) as the primary path; shioaji.json remains for anyone
+    # who prefers a dedicated file or a non-default profile per field.
+    from src.config.accessor import get_env_config
+
+    env = get_env_config().data
     fields: dict[str, str] = {}
-    if not cfg.api_key and os.environ.get(_ENV_API_KEY, "").strip():
-        fields["api_key"] = os.environ[_ENV_API_KEY].strip()
-    if not cfg.secret_key and os.environ.get(_ENV_SECRET_KEY, "").strip():
-        fields["secret_key"] = os.environ[_ENV_SECRET_KEY].strip()
-    if not cfg.ca_path and os.environ.get(_ENV_CA_PATH, "").strip():
-        fields["ca_path"] = os.environ[_ENV_CA_PATH].strip()
-    if not cfg.ca_passwd and os.environ.get(_ENV_CA_PASSWD, ""):
-        fields["ca_passwd"] = os.environ[_ENV_CA_PASSWD]
+    if not cfg.api_key and env.sj_api_key.strip():
+        fields["api_key"] = env.sj_api_key.strip()
+    if not cfg.secret_key and env.sj_sec_key.strip():
+        fields["secret_key"] = env.sj_sec_key.strip()
+    if not cfg.ca_path and env.sj_ca_path.strip():
+        fields["ca_path"] = env.sj_ca_path.strip()
+    if not cfg.ca_passwd and env.sj_ca_passwd:
+        fields["ca_passwd"] = env.sj_ca_passwd
     if not fields:
         return cfg
     return ShioajiConfig.from_mapping({**asdict(cfg), **fields})

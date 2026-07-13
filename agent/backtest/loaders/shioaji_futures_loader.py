@@ -67,8 +67,11 @@ class DataLoader:
 
     def is_available(self) -> bool:
         """Available when SJ_API_KEY and SJ_SEC_KEY are both set."""
-        api_key = os.getenv("SJ_API_KEY", "").strip()
-        sec_key = os.getenv("SJ_SEC_KEY", "").strip()
+        from src.config.accessor import get_env_config
+
+        env = get_env_config().data
+        api_key = env.sj_api_key.strip()
+        sec_key = env.sj_sec_key.strip()
         return api_key not in SJ_KEY_PLACEHOLDERS and sec_key not in SJ_SECRET_PLACEHOLDERS
 
     def __init__(self) -> None:
@@ -83,13 +86,16 @@ class DataLoader:
             return
         import shioaji as sj
 
+        from src.config.accessor import get_env_config
+
         clear_stale_shioaji_locks()
-        production = os.getenv("SJ_PRODUCTION", "false").strip().lower() in ("1", "true", "yes")
+        env = get_env_config().data
+        production = env.sj_production.strip().lower() in ("1", "true", "yes")
         with suppress_native_stdout():
             api = sj.Shioaji(simulation=not production)
             api.login(
-                api_key=os.environ["SJ_API_KEY"],
-                secret_key=os.environ["SJ_SEC_KEY"],
+                api_key=env.sj_api_key,
+                secret_key=env.sj_sec_key,
                 contracts_timeout=10000,
             )
         self.api = api

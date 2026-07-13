@@ -187,7 +187,9 @@ class FinlabFundamentalProvider:
     def _ensure_logged_in(self) -> None:
         if self._logged_in:
             return
-        token = os.getenv("FINLAB_API_TOKEN", "")
+        from src.config.accessor import get_env_config
+
+        token = get_env_config().data.finlab_api_token
         if token.strip() in FINLAB_TOKEN_PLACEHOLDERS:
             raise RuntimeError("FINLAB_API_TOKEN is not configured")
         import finlab

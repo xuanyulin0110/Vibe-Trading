@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
+from src.config.accessor import get_env_config
 from src.config.loader import load_agent_config
-
-#: Env vars checked (in order) for the Telegram bot token. Keeping the token
-#: in ``agent/.env`` alongside every other secret (SJ_API_KEY, finlab token…)
-#: beats a second secret location in agent.json.
-_TELEGRAM_TOKEN_ENVS = ("TELEGRAM_BOT_TOKEN", "VIBE_TRADING_TELEGRAM_TOKEN")
 
 
 def load_channels_config(config_path: Path | None = None) -> dict[str, Any]:
@@ -37,8 +32,12 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
     so an operator who deliberately disabled a configured channel is never
     surprised by an env var flipping it back on).
     """
+    # TELEGRAM_BOT_TOKEN wins over VIBE_TRADING_TELEGRAM_TOKEN. Keeping the
+    # token in ``agent/.env`` alongside every other secret (SJ_API_KEY,
+    # finlab token…) beats a second secret location in agent.json.
+    tuning = get_env_config().agent_tuning
     token = next(
-        (os.environ[name].strip() for name in _TELEGRAM_TOKEN_ENVS if os.environ.get(name, "").strip()),
+        (value.strip() for value in (tuning.telegram_bot_token, tuning.vibe_trading_telegram_token) if value.strip()),
         "",
     )
     if not token:

@@ -50,7 +50,9 @@ class DataLoader:
 
     def is_available(self) -> bool:
         """Available when FINLAB_API_TOKEN is set."""
-        return os.getenv("FINLAB_API_TOKEN", "").strip() not in FINLAB_TOKEN_PLACEHOLDERS
+        from src.config.accessor import get_env_config
+
+        return get_env_config().data.finlab_api_token.strip() not in FINLAB_TOKEN_PLACEHOLDERS
 
     def __init__(self) -> None:
         """Defer login until first use (see ``_ensure_logged_in``).
@@ -72,7 +74,9 @@ class DataLoader:
         """Log in to finlab on first use, idempotent on repeat calls."""
         if self._logged_in:
             return
-        token = os.getenv("FINLAB_API_TOKEN", "")
+        from src.config.accessor import get_env_config
+
+        token = get_env_config().data.finlab_api_token
         if token.strip() in FINLAB_TOKEN_PLACEHOLDERS:
             raise RuntimeError("FINLAB_API_TOKEN is not configured")
         import finlab

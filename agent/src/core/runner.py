@@ -195,6 +195,16 @@ _RUNTIME_ENV_KEYS = frozenset(
         "SSL_CERT_DIR",
         "CURL_CA_BUNDLE",
         "TUSHARE_TOKEN",
+        # Taiwan market data (fork): finlab + Shioaji loaders fetch inside this
+        # subprocess. SJ_CA_PATH / SJ_CA_PASSWD (order-signing certificate) are
+        # deliberately NOT forwarded -- read-only kbars need no CA, and generated
+        # strategy code must never see order-placement material.
+        "FINLAB_API_TOKEN",
+        "SJ_API_KEY",
+        "SJ_SEC_KEY",
+        "SJ_PRODUCTION",
+        "SJ_HOME_PATH",
+        "VIBE_TRADING_SHIOAJI_MINUTE_CACHE",
         "FINNHUB_API_KEY",
         "ALPHAVANTAGE_API_KEY",
         "TIINGO_API_KEY",

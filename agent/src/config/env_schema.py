@@ -170,6 +170,17 @@ class DataConfig(_EnvBase):
     qveris_base_url: str = Field(alias="QVERIS_BASE_URL", default="")
     rsshub_base_url: str = Field(alias="RSSHUB_BASE_URL", default="")
     dashscope_api_key: str = Field(alias="DASHSCOPE_API_KEY", default="")
+    # Taiwan market (fork): finlab + Shioaji credentials and tuning.
+    # Sources: ``backtest/loaders/finlab_*.py``, ``backtest/loaders/shioaji_*.py``,
+    # ``backtest/loaders/_shioaji_kbars.py``, ``src/trading/connectors/shioaji/sdk.py``.
+    finlab_api_token: str = Field(alias="FINLAB_API_TOKEN", default="")
+    sj_api_key: str = Field(alias="SJ_API_KEY", default="")
+    sj_sec_key: str = Field(alias="SJ_SEC_KEY", default="")
+    sj_production: str = Field(alias="SJ_PRODUCTION", default="false")
+    sj_ca_path: str = Field(alias="SJ_CA_PATH", default="")
+    sj_ca_passwd: str = Field(alias="SJ_CA_PASSWD", default="")
+    sj_home_path: str = Field(alias="SJ_HOME_PATH", default="")
+    shioaji_minute_cache: str = Field(alias="VIBE_TRADING_SHIOAJI_MINUTE_CACHE", default="")
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +307,10 @@ class AgentTuningConfig(_EnvBase):
     vibe_live_authorize_timeout_s: int = Field(
         alias="VIBE_LIVE_AUTHORIZE_TIMEOUT_SECONDS", default=300,
     )
+    # IM channel secrets (fork): env-provided Telegram token overlay.
+    # Source: ``src/channels/config.py``.
+    telegram_bot_token: str = Field(alias="TELEGRAM_BOT_TOKEN", default="")
+    vibe_trading_telegram_token: str = Field(alias="VIBE_TRADING_TELEGRAM_TOKEN", default="")
 
 
 # ---------------------------------------------------------------------------
