@@ -1405,12 +1405,9 @@ def _build_response_from_run_dir(
                 )
 
     equity_path = run_dir / "artifacts" / "equity.csv"
+    equity_csv_rows: List[Dict[str, Any]] = []
     if equity_path.exists():
-        response.artifacts_equity_csv = _load_csv_to_dict(equity_path)
-
-    metrics_csv_path = run_dir / "artifacts" / "metrics.csv"
-    if metrics_csv_path.exists():
-        response.artifacts_metrics_csv = _load_csv_to_dict(metrics_csv_path)
+        equity_csv_rows = _load_csv_to_dict(equity_path, limit=1000)
 
     run_card_path = run_dir / "run_card.json"
     if run_card_path.exists():
@@ -1427,8 +1424,9 @@ def _build_response_from_run_dir(
             pass
 
     trades_path = run_dir / "artifacts" / "trades.csv"
+    trades_csv_rows: List[Dict[str, Any]] = []
     if trades_path.exists():
-        response.artifacts_trades_csv = _load_csv_to_dict(trades_path)
+        trades_csv_rows = _load_csv_to_dict(trades_path, limit=500)
 
     validation_path = run_dir / "artifacts" / "validation.json"
     if validation_path.exists():
@@ -1437,9 +1435,9 @@ def _build_response_from_run_dir(
         except (json.JSONDecodeError, OSError):
             pass
 
-    if response.artifacts_equity_csv:
+    if equity_csv_rows:
         filtered_equity = []
-        for row in response.artifacts_equity_csv[:1000]:
+        for row in equity_csv_rows:
             filtered_row: Dict[str, Any] = {}
             if "timestamp" in row:
                 filtered_row["time"] = row["timestamp"]
@@ -1450,8 +1448,8 @@ def _build_response_from_run_dir(
             filtered_equity.append(filtered_row)
         response.equity_curve = filtered_equity
 
-    if response.artifacts_trades_csv:
-        response.trade_log = response.artifacts_trades_csv[:500]
+    if trades_csv_rows:
+        response.trade_log = trades_csv_rows
 
     if include_analysis:
         analysis = build_run_analysis(
