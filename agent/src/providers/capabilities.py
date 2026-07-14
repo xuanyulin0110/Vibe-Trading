@@ -57,7 +57,7 @@ def _package_version() -> str:
         return "dev"
 
 
-_KIMI_USER_AGENT = f"Vibe-Trading/{_package_version()}"
+_VIBE_USER_AGENT = f"Vibe-Trading/{_package_version()}"
 
 
 _MOONSHOT_CAPABILITIES = ProviderCapabilities(
@@ -67,7 +67,7 @@ _MOONSHOT_CAPABILITIES = ProviderCapabilities(
     capture_reasoning=True,
     send_reasoning_content=True,
     normalize_assistant_content=True,
-    default_headers={"User-Agent": _KIMI_USER_AGENT},
+    default_headers={"User-Agent": _VIBE_USER_AGENT},
 )
 
 # Kimi for Coding subscription plan. Same wire behavior as Moonshot's open
@@ -79,7 +79,14 @@ _KIMI_CODING_CAPABILITIES = ProviderCapabilities(
     capture_reasoning=True,
     send_reasoning_content=True,
     normalize_assistant_content=True,
-    default_headers={"User-Agent": _KIMI_USER_AGENT},
+    default_headers={"User-Agent": _VIBE_USER_AGENT},
+)
+
+_NVIDIA_CAPABILITIES = ProviderCapabilities(
+    "nvidia",
+    "NVIDIA_API_KEY",
+    "NVIDIA_BASE_URL",
+    default_headers={"User-Agent": _VIBE_USER_AGENT},
 )
 
 # GLM thinking models (glm-4.5+/glm-5.x) stream the chain-of-thought as
@@ -123,6 +130,8 @@ _PROVIDERS: dict[str, ProviderCapabilities] = {
         capture_reasoning=True,
         native_adapter_package="langchain-deepseek",
     ),
+    "nvidia": _NVIDIA_CAPABILITIES,
+    "nvidia-nim": _NVIDIA_CAPABILITIES,
     "gemini": ProviderCapabilities(
         "gemini",
         "GEMINI_API_KEY",
@@ -156,6 +165,8 @@ def _infer_from_model(model: str) -> str | None:
         return "gemini"
     if lowered.startswith("deepseek"):
         return "deepseek"
+    if lowered.startswith("nvidia/"):
+        return "nvidia"
     if lowered.startswith("glm"):
         return "zhipu"
     if "kimi" in lowered or "moonshot" in lowered:

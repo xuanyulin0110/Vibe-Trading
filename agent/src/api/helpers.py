@@ -25,7 +25,8 @@ RUNS_DIR = _AGENT_DIR / "runs"
 SESSIONS_DIR = _AGENT_DIR / "sessions"
 UPLOADS_DIR = _AGENT_DIR / "uploads"
 AGENT_DIR = _AGENT_DIR
-ENV_PATH = AGENT_DIR / ".env"
+ENV_PATH = Path.home() / ".vibe-trading" / ".env"
+LEGACY_ENV_PATH = AGENT_DIR / ".env"
 ENV_EXAMPLE_PATH = AGENT_DIR / ".env.example"
 
 
@@ -110,9 +111,10 @@ def _atomic_write_secret(path: Path, content: str) -> None:
         raise
 
 
-def _ensure_agent_env_file() -> Path:
-    """Ensure the project-local agent/.env exists."""
-    env_path = _host_attr("ENV_PATH", ENV_PATH)
+def _ensure_agent_env_file(path: Path | None = None) -> Path:
+    """Ensure the selected settings dotenv exists with private permissions."""
+    env_path = path or _host_attr("ENV_PATH", ENV_PATH)
+    env_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not env_path.exists():
         _atomic_write_secret(env_path, "# Created by Vibe-Trading Web UI settings.\n")
     return env_path
@@ -146,6 +148,8 @@ def _read_env_values(path: Path) -> Dict[str, str]:
 
 def _project_relative_path(path: Path) -> str:
     """Return a project-relative display path without leaking an absolute path."""
+    if path == ENV_PATH:
+        return "~/.vibe-trading/.env"
     try:
         return path.resolve().relative_to(AGENT_DIR.parent.resolve()).as_posix()
     except ValueError:
@@ -169,7 +173,7 @@ def _format_env_value(value: str) -> str:
 
 def _write_env_values(path: Path, updates: Dict[str, str]) -> None:
     """Upsert active dotenv values while preserving comments and ordering."""
-    _ensure_agent_env_file()
+    _ensure_agent_env_file(path)
     lines = path.read_text(encoding="utf-8").splitlines()
     seen: set[str] = set()
     for index, raw in enumerate(lines):

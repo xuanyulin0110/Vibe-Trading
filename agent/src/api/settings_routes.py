@@ -158,17 +158,20 @@ def _baostock_installed() -> bool:
 
 
 def _read_settings_env_values() -> Dict[str, str]:
-    """Read settings without creating agent/.env.
+    """Read settings without creating a dotenv file.
 
-    Prefer the user's active agent/.env.  If it does not exist yet, fall back
-    to agent/.env.example for display defaults only.
+    Prefer the canonical user config, then the legacy package-local config.
+    If neither exists, use ``agent/.env.example`` for display defaults only.
     """
     host = _host()
     env_path = host.ENV_PATH
+    legacy_env_path = getattr(host, "LEGACY_ENV_PATH", _AGENT_DIR / ".env")
     env_example_path = host.ENV_EXAMPLE_PATH
     read_env = host._read_env_values
     if env_path.exists():
         return read_env(env_path)
+    if legacy_env_path.exists():
+        return read_env(legacy_env_path)
     if env_example_path.exists():
         return read_env(env_example_path)
     return {}
@@ -275,6 +278,37 @@ def _sync_runtime_env(provider: LLMProviderOption, updates: Dict[str, str]) -> N
         os.environ.pop("OPENAI_BASE_URL", None)
 
     reset_env_config()
+
+
+def _persist_settings_updates(updates: Dict[str, str]) -> Dict[str, str]:
+    """Persist settings to the canonical user config with legacy migration.
+
+    Args:
+        updates: Environment keys to upsert.
+
+    Returns:
+        Effective values read back from the canonical dotenv.
+
+    Raises:
+        HTTPException: If the user config cannot be written.
+    """
+    host = _host()
+    target = host.ENV_PATH
+    legacy = getattr(host, "LEGACY_ENV_PATH", _AGENT_DIR / ".env")
+    merged = dict(updates)
+    if not target.exists() and legacy != target and legacy.exists():
+        merged = {**host._read_env_values(legacy), **updates}
+    try:
+        host._write_env_values(target, merged)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Unable to save settings; check ownership and permissions for "
+                "~/.vibe-trading/.env"
+            ),
+        ) from exc
+    return host._read_env_values(target)
 
 
 # ---------------------------------------------------------------------------
@@ -390,9 +424,9 @@ def register_settings_routes(
         elif payload.clear_api_key:
             os.environ.pop("OPENAI_API_KEY", None)
 
-        host_ref._write_env_values(host_ref.ENV_PATH, updates)
+        saved_values = _persist_settings_updates(updates)
         _sync_runtime_env(provider, updates)
-        return _build_llm_settings_response(host_ref._read_env_values(host_ref.ENV_PATH))
+        return _build_llm_settings_response(saved_values)
 
     @app.get(
         "/settings/data-sources",
@@ -422,7 +456,7 @@ def register_settings_routes(
             updates["TUSHARE_TOKEN"] = current_values["TUSHARE_TOKEN"]
 
         if updates:
-            host_ref._write_env_values(host_ref.ENV_PATH, updates)
+            saved_values = _persist_settings_updates(updates)
             token = updates.get("TUSHARE_TOKEN", "").strip()
             if host_ref._is_configured_secret(token, TUSHARE_TOKEN_PLACEHOLDERS):
                 os.environ["TUSHARE_TOKEN"] = token
@@ -431,5 +465,5 @@ def register_settings_routes(
             reset_env_config()
 
         return _build_data_source_settings_response(
-            host_ref._read_env_values(host_ref.ENV_PATH)
+            saved_values if updates else _read_settings_env_values()
         )

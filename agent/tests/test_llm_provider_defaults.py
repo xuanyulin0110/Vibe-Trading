@@ -15,6 +15,7 @@ EXPECTED_PROVIDER_DEFAULTS = {
     "openai": "gpt-5.5",
     "openai-codex": "openai-codex/gpt-5.4",
     "deepseek": "deepseek-v4-pro",
+    "nvidia": "nvidia/nemotron-3-ultra-550b-a55b",
     "gemini": "gemini-3.5-flash",
     "groq": "meta-llama/llama-4-maverick-17b-128e-instruct",
     "dashscope": "qwen-plus-latest",
@@ -78,3 +79,13 @@ def test_interactive_onboard_suggests_current_primary_models() -> None:
     assert onboard_defaults["openai"] == "gpt-5.5"
     assert onboard_defaults["openai-codex"] == "openai-codex/gpt-5.4"
     assert onboard_defaults["deepseek"] == "deepseek-v4-pro"
+    assert onboard_defaults["nvidia"] == "nvidia/nemotron-3-ultra-550b-a55b"
+
+
+def test_nvidia_is_available_in_both_cli_onboarding_surfaces() -> None:
+    onboard = next(provider for provider in ONBOARD_PROVIDERS if provider.key == "nvidia")
+    legacy = next(item for item in cli._PROVIDER_CHOICES if item["provider"] == "nvidia")
+
+    assert onboard.key_env == legacy["key_env"] == "NVIDIA_API_KEY"
+    assert onboard.base_env == legacy["base_env"] == "NVIDIA_BASE_URL"
+    assert onboard.base_url == legacy["base_url"] == "https://integrate.api.nvidia.com/v1"

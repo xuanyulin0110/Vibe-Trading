@@ -182,6 +182,43 @@ def test_kimi_inference_respects_custom_user_agent() -> None:
     assert "User-Agent" in moonshot.default_headers
 
 
+def test_nvidia_provider_uses_bearer_auth_with_compatibility_user_agent() -> None:
+    """NVIDIA needs a provider UA preset, not a duplicate secret header."""
+    nvidia = get_provider_capabilities("nvidia-nim", "nvidia/nemotron")
+
+    assert nvidia.name == "nvidia"
+    assert nvidia.api_key_env == "NVIDIA_API_KEY"
+    assert nvidia.base_url_env == "NVIDIA_BASE_URL"
+    assert nvidia.default_headers["User-Agent"].startswith("Vibe-Trading/")
+    assert "X-NVIDIA-API-Key" not in nvidia.default_headers
+
+
+def test_nvidia_build_passes_only_capability_headers() -> None:
+    """NVIDIA's preset must reach ChatOpenAI without secret duplication."""
+    import src.providers.llm as llm_mod
+
+    captured: dict = {}
+
+    class _FakeChatOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    env = {
+        "LANGCHAIN_PROVIDER": "nvidia",
+        "NVIDIA_API_KEY": "nvapi-test",
+        "NVIDIA_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "LANGCHAIN_MODEL_NAME": "nvidia/nemotron-3-ultra-550b-a55b",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
+            llm_mod._dotenv_loaded = True
+            build_llm()
+
+    assert captured["vibe_provider"] == "nvidia"
+    assert captured["default_headers"]["User-Agent"].startswith("Vibe-Trading/")
+    assert "X-NVIDIA-API-Key" not in captured["default_headers"]
+
+
 def test_deepseek_native_adapter_is_used_when_available(monkeypatch) -> None:
     """DeepSeek should prefer the optional native adapter when installed."""
     import sys
