@@ -17,11 +17,17 @@ trading-connector reads, swarm orchestration, trade-journal and shadow-account
 analysis. Every exposed tool is read-only or research-only; no order-placing or
 order-cancelling tool is ever surfaced via MCP.
 
-Also surfaces one MCP prompt, ``research_workflow`` — the task-routing and
-safety rules the built-in chat agent gets from its system prompt (backtest
-flow, path format asymmetry, run_id collision safety, post-backtest
-attribution). MCP clients should load it once at the start of a research
-session; in Claude Code it appears as /mcp__vibe-trading__research_workflow.
+Also surfaces two MCP prompts:
+
+- ``research_workflow`` — the task-routing and safety rules the built-in chat
+  agent gets from its system prompt (backtest flow, path format asymmetry,
+  run_id collision safety, post-backtest attribution). Load once at the start
+  of a research session; in Claude Code: /mcp__vibe-trading__research_workflow.
+- ``committee`` — renders any swarm preset (default investment_committee) as
+  role system prompts + a task DAG so the CLIENT can run the multi-agent
+  committee with its own sub-agents and LLM budget instead of the server-side
+  run_swarm (which needs a server LLM key). Single source of truth stays the
+  YAML presets in src/swarm/presets/.
 
 Usage:
     python mcp_server.py                     # stdio transport (default)
@@ -301,6 +307,177 @@ def research_workflow() -> str:
     format rules, run_id safety, post-backtest attribution, and skill-loading
     requirements. Load this once at the start of a research session."""
     return _RESEARCH_WORKFLOW_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Committee prompt — render a swarm preset as a client-side orchestration pack
+# ---------------------------------------------------------------------------
+
+# The server-side ``run_swarm`` runs preset roles with the SERVER's LLM key.
+# This prompt renders the same preset (role system prompts + task DAG) as
+# text so an MCP client can run the roles itself — with its own sub-agents
+# and its own LLM budget — while still grounding every role in the MCP data
+# tools. Single source of truth stays the YAML files in src/swarm/presets/.
+
+_PRESET_NAME_RE_STR = r"^[a-z][a-z0-9_]{0,63}$"
+
+#: Native swarm-worker tool names that have no MCP equivalent, with guidance.
+_NON_MCP_TOOL_NOTES = {
+    "bash": "use your client's own shell if it has one",
+}
+
+#: Rendered in place of the preset's {upstream_context} injection slot.
+_UPSTREAM_CONTEXT_NOTE = (
+    "(upstream reports are appended below your task by the orchestrator)"
+)
+
+
+def _parse_extra_variables(extra: str) -> dict[str, str]:
+    """Parse ``k=v, k2=v2`` (comma- or newline-separated) into a dict."""
+    import re
+
+    result: dict[str, str] = {}
+    for chunk in re.split(r"[,\n]", extra or ""):
+        key, sep, value = chunk.partition("=")
+        if sep and key.strip():
+            result[key.strip()] = value.strip()
+    return result
+
+
+def _substitute_preset_vars(text: str, filled: dict[str, str], declared: list[dict]) -> str:
+    """Fill ``{var}`` placeholders without str.format (prompts contain literal braces)."""
+    out = text.replace("{upstream_context}", _UPSTREAM_CONTEXT_NOTE)
+    for var in declared:
+        name = str(var.get("name", "")).strip()
+        if not name:
+            continue
+        value = filled.get(name, "")
+        if not value:
+            desc = str(var.get("description", "")).strip()
+            value = f"<FILL BEFORE DISPATCH: {name}" + (f" — {desc}>" if desc else ">")
+        out = out.replace("{" + name + "}", value)
+    return out
+
+
+def _render_committee_pack(preset: dict, filled: dict[str, str]) -> str:
+    """Render a parsed preset dict into the orchestration-pack markdown."""
+    declared = preset.get("variables") or []
+    missing = [
+        str(v.get("name"))
+        for v in declared
+        if v.get("required") and not filled.get(str(v.get("name")))
+    ]
+
+    lines: list[str] = []
+    lines.append(f"# {preset.get('title') or preset.get('name')} — client-side committee pack")
+    lines.append("")
+    lines.append(str(preset.get("description", "")).strip())
+    lines.append("")
+    lines.append("## How to run this committee (orchestrator instructions)")
+    lines.append("")
+    lines.append(
+        "- You are the orchestrator. Run each role below as a sub-agent if your "
+        "client supports them (give the sub-agent the role's SYSTEM PROMPT plus "
+        "its TASK); otherwise run the roles yourself sequentially, one at a "
+        "time, in DAG order."
+    )
+    lines.append(
+        "- Tasks whose `depends_on` is empty run IN PARALLEL. A task with "
+        "dependencies must receive the FULL text of every upstream report "
+        "appended under clear headings (do not summarize upstream reports)."
+    )
+    lines.append(
+        "- Every role must ground its claims in real data fetched through the "
+        "vibe-trading MCP tools; a role that cannot fetch a data point must "
+        "say so rather than invent it."
+    )
+    lines.append(
+        "- Roles that run backtests must first load the `research_workflow` "
+        "prompt rules (path prefix asymmetry, run_id collision probe)."
+    )
+    lines.append(
+        "- Final assembly: present the terminal task's decision first, then "
+        "upstream highlights; use markdown pipe tables for multi-row data; "
+        "always name the primary risk; close with a one-line research-only "
+        "note (not investment advice)."
+    )
+    if missing:
+        lines.append("")
+        lines.append(
+            f"⚠️ Required variables not provided yet: {', '.join(missing)} — "
+            "ask the user for these BEFORE dispatching any role, then mentally "
+            "substitute them wherever a <FILL BEFORE DISPATCH: ...> marker appears."
+        )
+
+    for agent in preset.get("agents") or []:
+        role = agent.get("role") or agent.get("id")
+        lines.append("")
+        lines.append(f"## Role: {role} (`{agent.get('id')}`)")
+        tools = agent.get("tools") or []
+        if tools:
+            rendered_tools = [
+                f"{t} ({_NON_MCP_TOOL_NOTES[t]})" if t in _NON_MCP_TOOL_NOTES else t
+                for t in tools
+            ]
+            lines.append(f"- Allowed tools: {', '.join(rendered_tools)}")
+        skills = agent.get("skills") or []
+        if skills:
+            lines.append(f"- Skills to load via load_skill: {', '.join(skills)}")
+        lines.append("")
+        lines.append("### System prompt")
+        lines.append("")
+        lines.append(_substitute_preset_vars(str(agent.get("system_prompt", "")).strip(), filled, declared))
+
+    lines.append("")
+    lines.append("## Task DAG (dispatch in this order)")
+    lines.append("")
+    for task in preset.get("tasks") or []:
+        deps = task.get("depends_on") or []
+        dep_note = f" — depends on: {', '.join(deps)}" if deps else " — no dependencies (parallel-eligible)"
+        lines.append(f"### {task.get('id')} → role `{task.get('agent_id')}`{dep_note}")
+        template = _substitute_preset_vars(str(task.get("prompt_template", "")).strip(), filled, declared)
+        lines.append(f"Task: {template}")
+        input_from = task.get("input_from") or {}
+        if input_from:
+            pairs = ", ".join(f"{label} = full output of {src}" for label, src in input_from.items())
+            lines.append(f"Append upstream reports: {pairs}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+@mcp.prompt
+def committee(
+    preset_name: str = "investment_committee",
+    target: str = "",
+    market: str = "",
+    extra_variables: str = "",
+) -> str:
+    """Render a swarm team preset (default: investment_committee) as role
+    prompts + a task DAG you can execute yourself with sub-agents — the same
+    prompts run_swarm uses server-side, but the LLM work happens client-side
+    on your own budget. For presets whose variables aren't target/market,
+    pass extra_variables as "goal=..., timeframe=...". Preset names:
+    list_swarm_presets."""
+    import re
+
+    name = (preset_name or "investment_committee").strip()
+    if not re.fullmatch(_PRESET_NAME_RE_STR, name):
+        return f"Invalid preset name {name!r}. Use list_swarm_presets to see valid names."
+
+    from src.swarm.presets import load_preset
+
+    try:
+        preset = load_preset(name)
+    except FileNotFoundError as exc:
+        return str(exc)
+
+    filled = _parse_extra_variables(extra_variables)
+    if target.strip():
+        filled.setdefault("target", target.strip())
+    if market.strip():
+        filled.setdefault("market", market.strip())
+    return _render_committee_pack(preset, filled)
 
 
 # ---------------------------------------------------------------------------

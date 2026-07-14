@@ -237,9 +237,10 @@ def test_mcp_server_happy_path() -> None:
         )
         prompts = resp.get("result", {}).get("prompts") or []
         prompt_names = {p["name"] for p in prompts}
-        assert "research_workflow" in prompt_names, (
-            f"research_workflow prompt missing from catalogue: {sorted(prompt_names)}"
-        )
+        for expected_prompt in ("research_workflow", "committee"):
+            assert expected_prompt in prompt_names, (
+                f"{expected_prompt} prompt missing from catalogue: {sorted(prompt_names)}"
+            )
 
         # 5. prompts/get research_workflow — content must carry the two rules
         # that historically broke MCP clients: the agent/runs/ path prefix
@@ -260,6 +261,36 @@ def test_mcp_server_happy_path() -> None:
         for needle in ("agent/runs/", "load_skill", "run_id"):
             assert needle in prompt_text, (
                 f"research_workflow prompt is missing {needle!r}"
+            )
+
+        # 6. prompts/get committee — renders the investment_committee preset
+        # as a client-side orchestration pack with variables substituted, so
+        # MCP clients can run the multi-agent committee with their own
+        # sub-agents instead of the server-side run_swarm.
+        _send(proc, {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "prompts/get",
+            "params": {
+                "name": "committee",
+                "arguments": {"target": "2330.TW", "market": "tw_equity"},
+            },
+        })
+        resp, info = _wait_for_id(q, 6, CALL_TIMEOUT)
+        assert resp is not None, (
+            f"prompts/get committee did not respond within {CALL_TIMEOUT}s (status={info})"
+        )
+        messages = resp.get("result", {}).get("messages") or []
+        assert messages, f"prompts/get committee returned no messages: {resp}"
+        committee_text = messages[0].get("content", {}).get("text", "")
+        for needle in (
+            "Bull-side Researcher",  # role prompts made it through
+            "2330.TW",               # variable substitution happened
+            "Task DAG",              # dispatch order included
+            "depends_on",            # DAG semantics explained
+        ):
+            assert needle in committee_text, (
+                f"committee prompt is missing {needle!r}"
             )
     finally:
         try:
