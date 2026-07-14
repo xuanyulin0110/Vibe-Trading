@@ -18,6 +18,31 @@ def _body(raw: str) -> dict:
     return json.loads(raw)
 
 
+def test_write_file_accepts_model_argument_aliases(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("VIBE_TRADING_ALLOWED_RUN_ROOTS", str(tmp_path))
+
+    body = _body(
+        WriteFileTool().execute(
+            file_path="handoff.md",
+            text="verified alias content",
+            run_dir=str(tmp_path),
+        )
+    )
+
+    assert body["status"] == "ok"
+    assert (tmp_path / "handoff.md").read_text(encoding="utf-8") == "verified alias content"
+
+
+def test_write_file_returns_recoverable_errors_for_missing_arguments() -> None:
+    missing_path = _body(WriteFileTool().execute(content="payload"))
+    missing_content = _body(WriteFileTool().execute(path="handoff.md"))
+
+    assert missing_path["status"] == "error"
+    assert "missing required argument 'path'" in missing_path["error"]
+    assert missing_content["status"] == "error"
+    assert "missing required argument 'content'" in missing_content["error"]
+
+
 def test_write_file_rejects_unconfigured_absolute_run_dir(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("VIBE_TRADING_ALLOWED_RUN_ROOTS", raising=False)
 

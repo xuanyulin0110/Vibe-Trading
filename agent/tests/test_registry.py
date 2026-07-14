@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pandas as pd
 import pytest
 
 from backtest.loaders.base import DataLoaderProtocol, NoAvailableSourceError
@@ -154,10 +153,10 @@ class TestFallbackChains:
         ]
         assert FALLBACK_CHAINS["us_equity"] == [
             "yahoo", "stooq", "sina", "eastmoney", "yfinance", "tiingo", "fmp",
-            "finnhub", "alphavantage", "akshare", "local",
+            "finnhub", "alphavantage", "longbridge", "akshare", "local",
         ]
         assert FALLBACK_CHAINS["hk_equity"] == [
-            "eastmoney", "yahoo", "futu", "yfinance", "akshare", "local",
+            "eastmoney", "yahoo", "futu", "yfinance", "akshare", "longbridge", "local",
         ]
 
     def test_us_equity_includes_sina_fallback(self) -> None:

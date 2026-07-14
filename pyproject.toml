@@ -97,6 +97,9 @@ include = ["src*", "backtest*", "cli*"]
 ibkr = [
     "ib_async>=2.0",
 ]
+longbridge = [
+    "longbridge>=0.2.5",
+]
 deepseek = [
     "langchain-deepseek>=1.0.0,<2",
 ]

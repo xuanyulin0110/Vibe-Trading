@@ -46,6 +46,29 @@ def test_harmonic_backend_is_available_as_an_optional_extra() -> None:
     assert "pyharmonics" in harmonic_extra
 
 
+def test_longbridge_sdk_is_optional_and_available_as_an_extra() -> None:
+    """Broker SDK dependencies must not perturb every baseline installation."""
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+
+    core_dependencies = {
+        _normalized_requirement_name(requirement)
+        for requirement in pyproject["project"]["dependencies"]
+    }
+    requirements_txt = {
+        _normalized_requirement_name(line)
+        for line in (ROOT / "agent" / "requirements.txt").read_text().splitlines()
+        if line and not line.startswith("#")
+    }
+    longbridge_extra = {
+        _normalized_requirement_name(requirement)
+        for requirement in pyproject["project"]["optional-dependencies"]["longbridge"]
+    }
+
+    assert "longbridge" not in core_dependencies
+    assert "longbridge" not in requirements_txt
+    assert "longbridge" in longbridge_extra
+
+
 def test_channel_core_websocket_dependency_is_declared_for_baseline_installs() -> None:
     """The built-in WebSocket gateway imports websockets at module import time."""
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())

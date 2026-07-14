@@ -18,7 +18,6 @@ from __future__ import annotations
 import concurrent.futures
 
 import pytest
-from pydantic import ValidationError
 
 from src.config.accessor import (
     _parse_bool,
@@ -98,6 +97,9 @@ class TestEnvConfigDefaults:
         assert c.data.vibe_trading_data_cache is False
         assert c.data.vibe_trading_data_cache_root == ""
         assert c.data.aliyun_iqs_api_key == ""
+        assert c.data.longbridge_app_key == ""
+        assert c.data.longbridge_app_secret == ""
+        assert c.data.longbridge_access_token == ""
 
     def test_api_defaults(self) -> None:
         c = EnvConfig()
@@ -201,6 +203,19 @@ class TestEnvConfigTypeCoercion:
 
 class TestEnvConfigOverride:
     """Verify env vars override defaults and reset restores them."""
+
+    def test_longbridge_credentials_read_from_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LONGBRIDGE_APP_KEY", "app-key")
+        monkeypatch.setenv("LONGBRIDGE_APP_SECRET", "app-secret")
+        monkeypatch.setenv("LONGBRIDGE_ACCESS_TOKEN", "access-token")
+
+        data = EnvConfig().data
+
+        assert data.longbridge_app_key == "app-key"
+        assert data.longbridge_app_secret == "app-secret"
+        assert data.longbridge_access_token == "access-token"
 
     def test_env_override_and_reset(
         self, monkeypatch: pytest.MonkeyPatch
