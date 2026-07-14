@@ -12,6 +12,15 @@ services:
       # Override by exporting OLLAMA_BASE_URL (or setting it in a top-level .env)
       # when Ollama runs elsewhere or on a different port.
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # read_only rootfs (VT-007) vs the Shioaji SDK's on-disk state: its
+      # token pool + contracts cache default to ~/.shioaji and its log to
+      # ./shioaji.log, both unwritable now. Home state goes inside the
+      # vibe-home volume so the contract cache survives restarts; the log
+      # goes to the /tmp tmpfs. mcp-sse deliberately does NOT share these:
+      # its rootfs is writable, and two containers sharing one contracts
+      # cache would race on the SDK's .lock files.
+      - SJ_HOME_PATH=/home/vibe/.vibe-trading/shioaji
+      - SJ_LOG_PATH=/tmp/shioaji.log
     extra_hosts:
       # Maps host.docker.internal -> host gateway (needed on Linux; harmless on Docker Desktop).
       # Requires Docker Engine >= 20.10 / Compose v2 (host-gateway support).
