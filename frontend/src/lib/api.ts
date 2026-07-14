@@ -228,7 +228,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ engaged }),
     }),
-  deploymentEventsUrl: () => withAuthQuery(`${BASE}/deployments/events`),
+  // Bare stream URL, same contract as sseUrl above: useSSE mints the
+  // single-use SSE ticket per connect/reconnect.
+  deploymentEventsUrl: () => `${BASE}/deployments/events`,
 
   // Swarm API
   listSwarmPresets: () => request<SwarmPreset[]>("/swarm/presets"),
