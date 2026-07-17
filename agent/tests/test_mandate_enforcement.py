@@ -9,6 +9,7 @@ floors are exercised by monkeypatching the loader-backed helpers (no network).
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -280,6 +281,51 @@ def test_guard_forwards_in_mandate_order(live_runtime: Path) -> None:
     # Daily counter incremented exactly once on confirmed forward.
     counter = json.loads((live_runtime / "live" / "robinhood" / "trade_counter.json").read_text())
     assert counter["count"] == 1
+
+
+def test_mcp_guard_serializes_the_daily_cap_with_submission(live_runtime: Path) -> None:
+    """MCP placements share the same one-permit transaction as SDK orders."""
+    _write_mandate(live_runtime, _mandate(max_trades_per_day=1))
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingAdapter(_MockAdapter):
+        def call_tool(self, remote_name, arguments, *, local_name=None):
+            if remote_name in {"get_equity_positions", "get_portfolio"}:
+                return super().call_tool(remote_name, arguments, local_name=local_name)
+            self.order_calls.append({"remote": remote_name, "arguments": arguments})
+            entered.set()
+            assert release.wait(timeout=5)
+            return {"status": "ok", "order_id": "rh_test_1", "state": "accepted"}
+
+    adapter = _BlockingAdapter(positions=[], balance=5000.0)
+    guard = _guard(adapter)
+    outputs: list[dict[str, Any]] = []
+
+    def place() -> None:
+        outputs.append(
+            json.loads(
+                guard.execute(
+                    symbol="AAPL",
+                    side="buy",
+                    instrument_type="equity",
+                    notional_usd=100.0,
+                )
+            )
+        )
+
+    first = threading.Thread(target=place)
+    second = threading.Thread(target=place)
+    first.start()
+    assert entered.wait(timeout=2)
+    second.start()
+    second.join(timeout=1)
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert len(adapter.order_calls) == 1
+    assert sorted(output["status"] for output in outputs) == ["blocked", "ok"]
 
 
 def test_guard_blocks_over_notional_with_breach(live_runtime: Path) -> None:
