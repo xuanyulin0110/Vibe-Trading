@@ -35,6 +35,15 @@ USER_PRESETS_DIR = Path.home() / ".vibe-trading" / "swarm" / "presets"
 _INTERNAL_TEMPLATE_VARS = {"upstream_context"}
 
 
+def _redact_home(path: Path) -> str:
+    """Render ``path`` with the home prefix collapsed to ``~`` so user-facing
+    errors never leak the absolute home directory (CWE-209)."""
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
 def _validate_preset_name(name: str) -> str:
     """Reject names that are empty or could escape a presets directory.
 
@@ -93,8 +102,8 @@ def load_preset(name: str) -> dict:
             for p in directory.glob("*.yaml")
         })
         raise FileNotFoundError(
-            f"Preset {name!r} not found in {USER_PRESETS_DIR} or the bundled "
-            f"presets. Available: {available}"
+            f"Preset {name!r} not found in {_redact_home(USER_PRESETS_DIR)} or "
+            f"the bundled presets. Available: {available}"
         )
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
