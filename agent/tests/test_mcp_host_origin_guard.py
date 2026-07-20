@@ -26,9 +26,9 @@ from starlette.testclient import TestClient
 
 
 def test_parse_allowed_hosts_default_is_loopback_only():
-    assert mcp_server._parse_allowed_hosts(None) == ["127.0.0.1", "localhost"]
-    assert mcp_server._parse_allowed_hosts("") == ["127.0.0.1", "localhost"]
-    assert mcp_server._parse_allowed_hosts("   ") == ["127.0.0.1", "localhost"]
+    assert mcp_server._parse_allowed_hosts(None) == ["127.0.0.1", "::1", "localhost"]
+    assert mcp_server._parse_allowed_hosts("") == ["127.0.0.1", "::1", "localhost"]
+    assert mcp_server._parse_allowed_hosts("   ") == ["127.0.0.1", "::1", "localhost"]
 
 
 def test_parse_allowed_hosts_parses_and_trims():
@@ -38,6 +38,35 @@ def test_parse_allowed_hosts_parses_and_trims():
     ]
     # Empty segments are dropped, whitespace stripped.
     assert mcp_server._parse_allowed_hosts("mcp.local, ,  ") == ["mcp.local"]
+
+
+def test_parse_allowed_hosts_normalizes_entries():
+    # Case-insensitive, IPv6 brackets stripped, wildcard forms pass through.
+    assert mcp_server._parse_allowed_hosts("LOCALHOST, [::1], *.Example.COM, *") == [
+        "localhost",
+        "::1",
+        "*.example.com",
+        "*",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# _normalize_host
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_host_strips_port_and_lowercases():
+    assert mcp_server._normalize_host("LOCALHOST:8900") == "localhost"
+    assert mcp_server._normalize_host("Example.COM") == "example.com"
+    assert mcp_server._normalize_host("127.0.0.1:8900") == "127.0.0.1"
+
+
+def test_normalize_host_handles_ipv6_forms():
+    assert mcp_server._normalize_host("[::1]:8900") == "::1"
+    assert mcp_server._normalize_host("[::1]") == "::1"
+    # Bare IPv6 (no brackets) is kept whole, never split into a fake host:port.
+    assert mcp_server._normalize_host("::1") == "::1"
+    assert mcp_server._normalize_host("fe80::1%eth0") == "fe80::1%eth0"
 
 
 # ---------------------------------------------------------------------------
@@ -139,3 +168,50 @@ def test_env_override_extends_allow_list():
     # Loopback is no longer implicitly trusted once an explicit list is set.
     resp = client.post("/mcp", headers={"host": "127.0.0.1:8900"})
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# IPv6 / case handling in the wired host guard
+# ---------------------------------------------------------------------------
+
+
+def test_ipv6_loopback_accepted_by_default_list():
+    """`--host ::1` deployments must not 400 every request (Starlette did)."""
+    client = TestClient(_guarded_probe_app(mcp_server._parse_allowed_hosts(None)))
+    resp = client.post("/mcp", headers={"host": "[::1]:8900"})
+    assert resp.status_code == 200
+    resp = client.post("/mcp", headers={"host": "::1"})
+    assert resp.status_code == 200
+
+
+def test_ipv6_env_entry_accepts_bracketed_host():
+    """An env entry of `[::1]` or `::1` must actually match (no `*` needed)."""
+    for entry in ("[::1]", "::1"):
+        hosts = mcp_server._parse_allowed_hosts(entry)
+        client = TestClient(_guarded_probe_app(hosts))
+        resp = client.post("/mcp", headers={"host": "[::1]:8900"})
+        assert resp.status_code == 200, entry
+
+
+def test_host_matching_is_case_insensitive():
+    client = TestClient(_guarded_probe_app(["127.0.0.1", "localhost"]))
+    resp = client.post("/mcp", headers={"host": "LOCALHOST:8900"})
+    assert resp.status_code == 200
+
+
+def test_host_guard_still_rejects_untrusted():
+    client = TestClient(_guarded_probe_app(mcp_server._parse_allowed_hosts(None)))
+    resp = client.post("/mcp", headers={"host": "evil.example.com"})
+    assert resp.status_code == 400
+    # A missing Host header fails closed.
+    resp = client.post("/mcp", headers={"host": ""})
+    assert resp.status_code == 400
+
+
+def test_host_guard_wildcard_semantics_unchanged():
+    client = TestClient(_guarded_probe_app(["*.example.com"]))
+    assert client.post("/mcp", headers={"host": "api.example.com"}).status_code == 200
+    assert client.post("/mcp", headers={"host": "example.com"}).status_code == 200
+    assert client.post("/mcp", headers={"host": "example.org"}).status_code == 400
+    client = TestClient(_guarded_probe_app(["*"]))
+    assert client.post("/mcp", headers={"host": "anything.example.org"}).status_code == 200

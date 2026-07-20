@@ -123,27 +123,62 @@ def _resolve_include_shell_tools(cli_opt_in: bool) -> bool:
 # The stdio transport is a private parent/child pipe and needs no host guard.
 # The network transports (``--transport sse`` / ``http``) bind a TCP port, so
 # a page in the user's browser could POST to the local MCP endpoint via
-# DNS-rebinding and reach every MCP tool. fastmcp 3.2.4 ships NO host/origin
+# DNS-rebinding and reach every MCP tool. fastmcp ships NO host/origin
 # protection, so we wrap the ASGI app with a Host allow-list
-# (TrustedHostMiddleware) plus an Origin allow-list before the MCP session is
+# (_HostGuardMiddleware) plus an Origin allow-list before the MCP session is
 # reached. Default = loopback-only, so a local HTTP/SSE MCP still works.
 # ---------------------------------------------------------------------------
 
-_DEFAULT_MCP_ALLOWED_HOSTS = ("127.0.0.1", "localhost")
+_DEFAULT_MCP_ALLOWED_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def _normalize_host(host: str) -> str:
+    """Normalize a Host header value (or allow-list entry) for comparison.
+
+    Strips the port and any IPv6 brackets, then lowercases: ``[::1]:8900``
+    becomes ``::1``, ``Example.COM:8900`` becomes ``example.com``. A value
+    with more than one colon and no brackets is treated as a bare IPv6
+    literal and kept whole (never split into a fake ``host:port`` pair).
+
+    Args:
+        host: Raw Host header value or allow-list entry.
+
+    Returns:
+        The comparable hostname, lowercased.
+    """
+    value = host.strip()
+    if value.startswith("["):
+        # Bracketed IPv6 literal, optionally followed by ``:port``.
+        end = value.find("]")
+        if end != -1:
+            return value[1:end].lower()
+    elif value.count(":") == 1:
+        # ``name:port`` — bare IPv6 (multiple colons) is kept whole.
+        value = value.rsplit(":", 1)[0]
+    return value.lower()
 
 
 def _parse_allowed_hosts(raw: str | None) -> list[str]:
     """Parse ``VIBE_TRADING_MCP_ALLOWED_HOSTS`` into a Host/Origin allow-list.
+
+    Entries are normalized like Host header values (case-insensitive, IPv6
+    brackets stripped); wildcard forms (``*``, ``*.``) pass through apart
+    from lowercasing.
 
     Args:
         raw: Comma-separated env value (may be ``None`` / empty).
 
     Returns:
         The parsed host list, or the loopback-only default
-        (``127.0.0.1``, ``localhost``) when unset/blank so a local HTTP/SSE
-        MCP keeps working while DNS-rebinding hosts are rejected.
+        (``127.0.0.1``, ``::1``, ``localhost``) when unset/blank so a local
+        HTTP/SSE MCP keeps working while DNS-rebinding hosts are rejected.
     """
-    hosts = [h.strip() for h in (raw or "").split(",") if h.strip()]
+    hosts = []
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        hosts.append(entry.lower() if entry.startswith("*") else _normalize_host(entry))
     return hosts or list(_DEFAULT_MCP_ALLOWED_HOSTS)
 
 
@@ -179,6 +214,37 @@ def _origin_allowed(origin: str | None, allowed_hosts: list[str]) -> bool:
     if not host:
         return False
     return any(_host_matches(host, pattern) for pattern in allowed_hosts)
+
+
+class _HostGuardMiddleware:
+    """ASGI middleware rejecting requests with an untrusted Host header.
+
+    Same role as Starlette's TrustedHostMiddleware, but normalizes the
+    header first: Starlette's plain ``split(":")`` mangles bracketed IPv6
+    (``[::1]:8900`` → ``"["``) and matches case-sensitively, which locked
+    out ``--host ::1`` deployments and ``LOCALHOST`` clients entirely.
+    """
+
+    def __init__(self, app: Any, allowed_hosts: list[str]) -> None:
+        self.app = app
+        self.allowed_hosts = list(allowed_hosts)
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") == "http":
+            host: str | None = None
+            for key, value in scope.get("headers", []):
+                if key == b"host":
+                    host = value.decode("latin-1")
+                    break
+            normalized = _normalize_host(host) if host else ""
+            if not any(_host_matches(normalized, pattern) for pattern in self.allowed_hosts):
+                from starlette.responses import PlainTextResponse
+
+                await PlainTextResponse("Invalid host header", status_code=400)(
+                    scope, receive, send
+                )
+                return
+        await self.app(scope, receive, send)
 
 
 class _OriginGuardMiddleware:
@@ -220,10 +286,9 @@ def _security_middleware(allowed_hosts: list[str]) -> list[Any]:
         A middleware list suitable for ``FastMCP.http_app(middleware=...)``.
     """
     from starlette.middleware import Middleware
-    from starlette.middleware.trustedhost import TrustedHostMiddleware
 
     return [
-        Middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts),
+        Middleware(_HostGuardMiddleware, allowed_hosts=allowed_hosts),
         Middleware(_OriginGuardMiddleware, allowed_hosts=allowed_hosts),
     ]
 
