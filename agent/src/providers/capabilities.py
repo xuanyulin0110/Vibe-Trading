@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import Mapping, Optional
 
 
@@ -57,7 +61,7 @@ def _package_version() -> str:
         return "dev"
 
 
-_KIMI_USER_AGENT = f"Vibe-Trading/{_package_version()}"
+_VIBE_USER_AGENT = f"Vibe-Trading/{_package_version()}"
 
 
 _MOONSHOT_CAPABILITIES = ProviderCapabilities(
@@ -67,7 +71,7 @@ _MOONSHOT_CAPABILITIES = ProviderCapabilities(
     capture_reasoning=True,
     send_reasoning_content=True,
     normalize_assistant_content=True,
-    default_headers={"User-Agent": _KIMI_USER_AGENT},
+    default_headers={"User-Agent": _VIBE_USER_AGENT},
 )
 
 # Kimi for Coding subscription plan. Same wire behavior as Moonshot's open
@@ -79,7 +83,14 @@ _KIMI_CODING_CAPABILITIES = ProviderCapabilities(
     capture_reasoning=True,
     send_reasoning_content=True,
     normalize_assistant_content=True,
-    default_headers={"User-Agent": _KIMI_USER_AGENT},
+    default_headers={"User-Agent": _VIBE_USER_AGENT},
+)
+
+_NVIDIA_CAPABILITIES = ProviderCapabilities(
+    "nvidia",
+    "NVIDIA_API_KEY",
+    "NVIDIA_BASE_URL",
+    default_headers={"User-Agent": _VIBE_USER_AGENT},
 )
 
 # GLM thinking models (glm-4.5+/glm-5.x) stream the chain-of-thought as
@@ -94,11 +105,27 @@ _ZHIPU_CAPABILITIES = ProviderCapabilities(
     capture_reasoning=True,
 )
 
-_OPENAI_CODEX_CAPABILITIES = ProviderCapabilities("openai-codex", None, "OPENAI_CODEX_BASE_URL")
+# iFlytek Spark's HTTP endpoint is plain OpenAI-compatible (Bearer APIPassword);
+# the v1 chat path exposes no reasoning fields, so no capability flags are set.
+_SPARK_CAPABILITIES = ProviderCapabilities(
+    "spark",
+    "SPARK_API_KEY",
+    "SPARK_BASE_URL",
+)
+
+_OPENAI_CODEX_CAPABILITIES = ProviderCapabilities(
+    "openai-codex", None, "OPENAI_CODEX_BASE_URL"
+)
 
 
 _PROVIDERS: dict[str, ProviderCapabilities] = {
     "openai": ProviderCapabilities("openai", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    "anthropic": ProviderCapabilities(
+        "anthropic",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        native_adapter_package="langchain-anthropic",
+    ),
     "openrouter": ProviderCapabilities(
         "openrouter",
         "OPENROUTER_API_KEY",
@@ -123,6 +150,18 @@ _PROVIDERS: dict[str, ProviderCapabilities] = {
         capture_reasoning=True,
         native_adapter_package="langchain-deepseek",
     ),
+    "siliconflow-cn": ProviderCapabilities(
+        "siliconflow-cn",
+        "SILICONFLOW_API_KEY",
+        "SILICONFLOW_BASE_URL",
+    ),
+    "siliconflow-global": ProviderCapabilities(
+        "siliconflow-global",
+        "SILICONFLOW_GLOBAL_API_KEY",
+        "SILICONFLOW_GLOBAL_BASE_URL",
+    ),
+    "nvidia": _NVIDIA_CAPABILITIES,
+    "nvidia-nim": _NVIDIA_CAPABILITIES,
     "gemini": ProviderCapabilities(
         "gemini",
         "GEMINI_API_KEY",
@@ -130,7 +169,9 @@ _PROVIDERS: dict[str, ProviderCapabilities] = {
         gemini_thought_signatures=True,
     ),
     "groq": ProviderCapabilities("groq", "GROQ_API_KEY", "GROQ_BASE_URL"),
-    "dashscope": ProviderCapabilities("dashscope", "DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL"),
+    "dashscope": ProviderCapabilities(
+        "dashscope", "DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL"
+    ),
     "qwen": ProviderCapabilities("qwen", "DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL"),
     "zhipu": _ZHIPU_CAPABILITIES,
     "glm": _ZHIPU_CAPABILITIES,
@@ -139,12 +180,18 @@ _PROVIDERS: dict[str, ProviderCapabilities] = {
     "kimi-coding": _KIMI_CODING_CAPABILITIES,
     "minimax": ProviderCapabilities("minimax", "MINIMAX_API_KEY", "MINIMAX_BASE_URL"),
     "mimo": ProviderCapabilities("mimo", "MIMO_API_KEY", "MIMO_BASE_URL"),
+    "spark": _SPARK_CAPABILITIES,
+    "iflytek": _SPARK_CAPABILITIES,
     "zai": ProviderCapabilities("zai", "ZAI_API_KEY", "ZAI_BASE_URL"),
     "ollama": ProviderCapabilities("ollama", None, "OLLAMA_BASE_URL"),
     "openai-codex": _OPENAI_CODEX_CAPABILITIES,
     "openai_codex": _OPENAI_CODEX_CAPABILITIES,
-    "opencode-zen": ProviderCapabilities("opencode-zen", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
-    "opencode-go": ProviderCapabilities("opencode-go", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    "opencode-zen": ProviderCapabilities(
+        "opencode-zen", "OPENAI_API_KEY", "OPENAI_BASE_URL"
+    ),
+    "opencode-go": ProviderCapabilities(
+        "opencode-go", "OPENAI_API_KEY", "OPENAI_BASE_URL"
+    ),
 }
 
 
@@ -156,6 +203,8 @@ def _infer_from_model(model: str) -> str | None:
         return "gemini"
     if lowered.startswith("deepseek"):
         return "deepseek"
+    if lowered.startswith("nvidia/"):
+        return "nvidia"
     if lowered.startswith("glm"):
         return "zhipu"
     if "kimi" in lowered or "moonshot" in lowered:
@@ -175,6 +224,12 @@ def get_provider_capabilities(
 
     Returns:
         Provider capability definition. Unknown providers fall back to OpenAI.
+
+    Notes:
+        Model-name inference (``_infer_from_model``) activates for the default
+        ``"openai"`` provider and empty/None providers. Explicit non-OpenAI
+        providers (OpenRouter, Requesty, DeepSeek, etc.) are never inferred —
+        the explicit provider choice always wins.
     """
     normalized = (provider or "").strip().lower().replace("_", "-")
     if normalized == "openai-codex":
@@ -187,7 +242,106 @@ def get_provider_capabilities(
     return _PROVIDERS.get(normalized, _PROVIDERS["openai"])
 
 
-def provider_env_names(provider: str | None, model: str | None = None) -> tuple[str | None, str]:
+def provider_env_names(
+    provider: str | None, model: str | None = None
+) -> tuple[str | None, str]:
     """Return the API-key and base-URL env names for a provider/model pair."""
     caps = get_provider_capabilities(provider, model)
     return caps.api_key_env, caps.base_url_env
+
+
+_PROVIDER_CATALOG_PATH = Path(__file__).with_name("llm_providers.json")
+
+
+@lru_cache(maxsize=1)
+def _provider_default_base_urls() -> dict[str, str]:
+    """Canonical ``name -> default_base_url`` map from the provider catalog.
+
+    The catalog (``llm_providers.json``) declares each provider's canonical API
+    root. Web Settings already fall back to it; this exposes the same default to
+    the backend credential path so a CLI / manual-``.env`` user who sets only
+    ``LANGCHAIN_PROVIDER`` + the API key still reaches the right endpoint (e.g.
+    Z.ai's ``/api/coding/paas/v4``) instead of silently defaulting to
+    ``api.openai.com`` and getting a 404 for a non-OpenAI model.
+    """
+    try:
+        raw = json.loads(_PROVIDER_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    entries = raw if isinstance(raw, list) else raw.get("providers", [])
+    result: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name", "")).strip().lower()
+        url = str(entry.get("default_base_url", "")).strip()
+        if name and url:
+            result[name] = url
+    return result
+
+
+def _provider_default_base_url(provider_name: str) -> str:
+    """Return the catalog default base URL for a canonical provider name."""
+    return _provider_default_base_urls().get((provider_name or "").strip().lower(), "")
+
+
+def get_llm_credentials(
+    provider: str | None,
+    model: str | None,
+) -> dict[str, str]:
+    """Resolve API key, base URL, and model from provider/model env vars.
+
+    Centralizes the ``provider → env_var_name → os.getenv → credential`` chain
+    that was previously duplicated across ``_sync_provider_env()`` and
+    ``provider_diagnostics()`` in ``llm.py``.
+
+    Args:
+        provider: Configured provider name (e.g. ``"openrouter"``).
+        model: Configured model name (e.g. ``"deepseek/deepseek-v4-pro"``).
+
+    Returns:
+        Dict with ``"provider"``, ``"api_key"``, ``"base_url"``, ``"model"``
+        keys. Values may be empty strings when not configured.
+
+    Notes:
+        Reads dynamic env vars via ``os.getenv`` — not part of ``EnvConfig``.
+        When no base URL is set in the environment, falls back to the provider
+        catalog's ``default_base_url`` so a provider set without an explicit
+        ``*_BASE_URL`` still hits its canonical endpoint.
+    """
+    caps = get_provider_capabilities(provider, model)
+    key_env, base_env = caps.api_key_env, caps.base_url_env
+
+    if key_env is not None:
+        api_key = os.getenv(  # noqa: env-gate
+            key_env, ""
+        ) or os.getenv(  # noqa: env-gate — dynamic provider key fallback
+            "OPENAI_API_KEY", ""
+        )
+    else:
+        api_key = (
+            os.getenv("OPENAI_API_KEY", "")  # noqa: env-gate — ollama default key
+            or "ollama"
+        )
+
+    base_url = (
+        (
+            os.getenv(base_env, "")  # noqa: env-gate — dynamic provider URL chain
+            if base_env
+            else ""
+        )
+        or os.getenv(  # noqa: env-gate — dynamic provider URL chain
+            "OPENAI_BASE_URL", ""
+        )
+        or os.getenv(  # noqa: env-gate — dynamic provider URL chain
+            "OPENAI_API_BASE", ""
+        )
+        or _provider_default_base_url(caps.name)
+    )
+
+    return {
+        "provider": (provider or "").strip().lower(),
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model or "",
+    }

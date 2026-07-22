@@ -132,8 +132,17 @@ class SessionStore:
                 continue
             session_file = session_dir / "session.json"
             data = self._read_json(session_file)
-            if data:
+            if not isinstance(data, dict):
+                continue
+            try:
                 sessions.append(Session.from_dict(data))
+            except (TypeError, ValueError, KeyError) as exc:
+                # One bad session.json must not abort listing siblings.
+                logger.warning(
+                    "Skipping corrupt session.json in %s: %s",
+                    session_dir.name,
+                    exc,
+                )
         sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return sessions[:limit]
 
@@ -169,8 +178,13 @@ class SessionStore:
         for line in path.read_text(encoding="utf-8").strip().splitlines():
             if line.strip():
                 try:
-                    messages.append(Message.from_dict(json.loads(line)))
-                except json.JSONDecodeError:
+                    payload = json.loads(line)
+                    if not isinstance(payload, dict):
+                        raise TypeError(
+                            f"message line must be a JSON object, got {type(payload).__name__}"
+                        )
+                    messages.append(Message.from_dict(payload))
+                except (json.JSONDecodeError, TypeError, ValueError, KeyError):
                     logger.warning(
                         "Skipping corrupted message line in session %s: %s",
                         session_id,

@@ -101,7 +101,7 @@ _ALPHA_ID_RE = re.compile(r"^[a-z][a-z0-9]+_[a-z0-9_]{1,64}$")
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 # Filter enums — keep in sync with src.factors.registry.Theme / Universe.
-_VALID_ZOOS = {"alpha101", "gtja191", "qlib158", "academic"}
+_VALID_ZOOS = {"alpha101", "gtja191", "qlib158", "academic", "fundamental"}
 _VALID_THEMES = {
     "momentum", "reversal", "volume", "volatility", "quality", "value",
     "liquidity", "microstructure", "sentiment", "growth", "leverage",

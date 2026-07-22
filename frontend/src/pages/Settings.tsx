@@ -483,8 +483,16 @@ export function Settings() {
                 onChange={(event) => setForm({ ...form, base_url: event.target.value })}
                 className={fieldClass}
                 placeholder={selectedProvider?.default_base_url}
+                list={selectedProvider?.base_url_options?.length ? "llm-base-url-options" : undefined}
                 disabled={selectedProvider?.auth_type === "oauth"}
               />
+              {selectedProvider?.base_url_options?.length ? (
+                <datalist id="llm-base-url-options">
+                  {selectedProvider.base_url_options.map((baseUrl) => (
+                    <option key={baseUrl} value={baseUrl} />
+                  ))}
+                </datalist>
+              ) : null}
             </label>
 
             <label className="grid gap-2">

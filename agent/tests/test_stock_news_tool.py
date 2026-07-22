@@ -2,7 +2,7 @@
 
 No request leaves the process: the Eastmoney HTTP boundary
 (:func:`backtest.loaders.eastmoney_client.throttled_get_json`) and the Yahoo
-:func:`backtest.loaders.yahoo_client.search` helper are mocked so the real
+:func:`backtest.loaders.yahoo_client.search_news` helper are mocked so the real
 client + tool parsing run fully offline.
 """
 
@@ -48,20 +48,23 @@ def _em_news_payload() -> dict[str, Any]:
     }
 
 
-def _yahoo_matches() -> list[dict[str, Any]]:
-    """A Yahoo search result list with two instrument matches."""
+def _yahoo_news() -> list[dict[str, Any]]:
+    """A Yahoo search result list with two news articles."""
     return [
         {
-            "symbol": "AAPL",
-            "shortname": "Apple Inc.",
-            "exchange": "NMS",
-            "quoteType": "EQUITY",
+            "title": "Apple unveils new products",
+            "publisher": "Reuters",
+            "link": "https://example.com/apple-products",
+            "providerPublishTime": 1704067200,
+            "summary": "Apple announced a new product lineup. " * 30,
+            "relatedTickers": ["AAPL"],
         },
         {
-            "symbol": "AAPL.MX",
-            "shortname": "Apple Inc.",
-            "exchange": "MEX",
-            "quoteType": "EQUITY",
+            "title": "Apple shares rise",
+            "publisher": "Bloomberg",
+            "link": "https://example.com/apple-shares",
+            "providerPublishTime": 1704153600,
+            "relatedTickers": ["AAPL"],
         },
     ]
 
@@ -90,6 +93,19 @@ class TestHelpers:
         assert len(out) <= 281
         assert out.endswith("…")
 
+    def test_search_news_filters_to_dict_items(self, monkeypatch) -> None:
+        def fake_get_json(url: str, **kwargs: Any) -> dict[str, Any]:
+            assert url == yahoo_client._SEARCH_BASE
+            assert kwargs["host_key"] == yahoo_client.HOST_KEY
+            assert kwargs["params"] == {"q": "apple", "newsCount": 2}
+            return {"news": [_yahoo_news()[0], "garbage", _yahoo_news()[1]]}
+
+        monkeypatch.setattr(yahoo_client, "throttled_get_json", fake_get_json)
+
+        articles = yahoo_client.search_news("apple", 2)
+
+        assert articles == _yahoo_news()
+
 
 class TestToolContract:
     def test_name_and_schema(self) -> None:
@@ -98,10 +114,10 @@ class TestToolContract:
         assert tool.is_readonly is True
         assert tool.parameters["required"] == []
         assert tool.parameters["properties"]["scope"]["enum"] == ["stock", "global"]
-        # Description must honestly state US/HK returns matches, not articles (B6).
+        # Description must advertise the shared article contract for every market.
         desc = tool.description.lower()
-        assert "matches" in desc
-        assert "not return news articles" in desc or "not 'articles'" in desc
+        assert "yahoo finance news articles" in desc
+        assert "matches" not in desc
 
 
 class TestExecuteSuccess:
@@ -139,36 +155,54 @@ class TestExecuteSuccess:
         assert out["data"]["scope"] == "global"
         assert len(out["data"]["articles"]) == 2
 
-    def test_us_stock_via_yahoo_returns_matches_not_articles(self) -> None:
+    def test_us_stock_via_yahoo_returns_articles(self) -> None:
         tool = StockNewsTool()
-        with patch.object(yahoo_client, "search", return_value=_yahoo_matches()) as srch:
+        with patch.object(
+            yahoo_client, "search_news", return_value=_yahoo_news()
+        ) as srch:
             out = json.loads(tool.execute(code="AAPL.US", limit=1))
 
-        srch.assert_called_once_with("AAPL")
+        srch.assert_called_once_with("AAPL", 1)
         assert out["ok"] is True
         assert out["market"] == "us"
         assert out["source"] == "yahoo"
-        # Instrument hits must NOT be mislabelled as articles (B6 regression).
-        assert "articles" not in out["data"]
-        assert out["data"]["result_type"] == "matches"
-        # limit=1 caps the two matches to one.
-        assert len(out["data"]["matches"]) == 1
-        first = out["data"]["matches"][0]
-        assert first["symbol"] == "AAPL"
-        assert first["exchange"] == "NMS"
-        assert first["quote_type"] == "EQUITY"
+        assert len(out["data"]["articles"]) == 1
+        first = out["data"]["articles"][0]
+        assert first == {
+            "title": "Apple unveils new products",
+            "url": "https://example.com/apple-products",
+            "source": "Reuters",
+            "published": "2024-01-01 00:00:00",
+            "snippet": ("Apple announced a new product lineup. " * 30)[:280].rstrip()
+            + "…",
+        }
 
-    def test_hk_stock_routes_to_yahoo(self) -> None:
+    def test_hk_stock_via_yahoo_returns_articles(self) -> None:
         tool = StockNewsTool()
-        with patch.object(yahoo_client, "search", return_value=[]):
+        with patch.object(
+            yahoo_client, "search_news", return_value=_yahoo_news()[:1]
+        ) as srch:
             out = json.loads(tool.execute(code="00700.HK"))
 
+        srch.assert_called_once_with("00700", 20)
         assert out["ok"] is True
         assert out["market"] == "hk"
         assert out["source"] == "yahoo"
-        assert "articles" not in out["data"]
-        assert out["data"]["result_type"] == "matches"
-        assert out["data"]["matches"] == []
+        assert out["data"]["articles"][0]["title"] == "Apple unveils new products"
+
+    def test_yahoo_empty_news_returns_empty_articles(self) -> None:
+        with patch.object(yahoo_client, "search_news", return_value=[]):
+            out = json.loads(StockNewsTool().execute(code="AAPL.US"))
+
+        assert out["ok"] is True
+        assert out["data"]["articles"] == []
+
+    def test_yahoo_limit_is_clamped_before_request(self) -> None:
+        with patch.object(yahoo_client, "search_news", return_value=[]) as srch:
+            out = json.loads(StockNewsTool().execute(code="AAPL.US", limit=999))
+
+        assert out["ok"] is True
+        srch.assert_called_once_with("AAPL", 50)
 
 
 class TestExecuteError:
@@ -202,10 +236,10 @@ class TestExecuteError:
     def test_yahoo_failure_envelope(self) -> None:
         tool = StockNewsTool()
         with patch.object(
-            yahoo_client, "search", side_effect=RuntimeError("yahoo 429")
+            yahoo_client, "search_news", side_effect=RuntimeError("yahoo 429")
         ):
             out = json.loads(tool.execute(code="AAPL.US"))
 
         assert out["ok"] is False
         assert "yahoo 429" in out["error"]
-        assert "yahoo search fetch failed" in out["error"]
+        assert "yahoo news fetch failed" in out["error"]

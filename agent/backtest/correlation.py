@@ -84,6 +84,31 @@ def _normalize_symbol(code: str, market: str) -> str:
     return cleaned
 
 
+def _close_series(code: str, df: pd.DataFrame) -> pd.Series:
+    """Extract the close-price series from a loader frame, date-indexed and sorted.
+
+    Supports ``trade_date`` as the index name, as a column, or a plain
+    DatetimeIndex — the shapes real loaders return.
+    """
+    if df.empty:
+        raise ValueError(f"Price series for '{code}' is empty")
+    if "close" not in df.columns and "close" not in df.index.names:
+        raise ValueError(f"No 'close' column in price series for '{code}'")
+    # Support trade_date as index name, column, or a plain DatetimeIndex.
+    if "trade_date" in df.columns:
+        ts = df.set_index("trade_date")["close"]
+    elif "close" in df.columns and (
+        "trade_date" in df.index.names
+        or isinstance(df.index, pd.DatetimeIndex)
+    ):
+        ts = df["close"]
+    else:
+        raise ValueError(
+            f"No trade_date index/column for price series '{code}'"
+        )
+    return ts.sort_index()
+
+
 def _rolling_correlation_matrix(
     price_series: Dict[str, pd.DataFrame],
     window: int,
@@ -109,16 +134,7 @@ def _rolling_correlation_matrix(
     returns_frames = []
     closes = {}
     for code, df in price_series.items():
-        if df.empty:
-            raise ValueError(f"Price series for '{code}' is empty")
-        if "close" not in df.columns and "close" not in df.index.names:
-            raise ValueError(f"No 'close' column in price series for '{code}'")
-        # Support both column-based and index-based trade_date
-        if "trade_date" in df.index.names and "trade_date" not in df.columns:
-            ts = df["close"]
-        else:
-            ts = df.set_index("trade_date")["close"]
-        closes[code] = ts.sort_index()
+        closes[code] = _close_series(code, df)
 
     for code in codes:
         ts = closes[code]
@@ -171,26 +187,22 @@ def _rolling_correlation_matrix(
     return labels, matrix
 
 
-def compute_correlation_matrix(
+def _fetch_price_series(
     codes: list[str],
-    days: int = 90,
-    method: Literal["pearson", "spearman"] = "pearson",
-) -> Dict[str, object]:
-    """Fetch price data and compute correlation matrix for a list of assets.
+    start_date: str,
+    end_date: str,
+) -> Dict[str, pd.DataFrame]:
+    """Fetch daily price frames for each code via the loader fallback chains.
 
     Args:
-        codes: List of asset codes (e.g. ["BTC-USDT", "ETH-USDT", "SPY"]).
-        days: Lookback window in days (default 90).
-        method: Correlation method.
+        codes: Asset codes as supplied by the caller (used as result keys).
+        start_date: Fetch range start, ``YYYY-MM-DD``.
+        end_date: Fetch range end, ``YYYY-MM-DD``.
 
     Returns:
-        Dict with keys: labels, matrix, window, method.
+        Mapping of original code -> OHLCV DataFrame; codes no loader could
+        serve are omitted (with a warning logged).
     """
-    from datetime import datetime, timedelta
-
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=days + 60)).strftime("%Y-%m-%d")
-
     # Import here to avoid circular
     from backtest.loaders import registry
 
@@ -240,6 +252,31 @@ def compute_correlation_matrix(
                 "correlation: no loader in the %s chain returned data for %s "
                 "(normalized from %r)", market, symbol, code,
             )
+
+    return price_series
+
+
+def compute_correlation_matrix(
+    codes: list[str],
+    days: int = 90,
+    method: Literal["pearson", "spearman"] = "pearson",
+) -> Dict[str, object]:
+    """Fetch price data and compute correlation matrix for a list of assets.
+
+    Args:
+        codes: List of asset codes (e.g. ["BTC-USDT", "ETH-USDT", "SPY"]).
+        days: Lookback window in days (default 90).
+        method: Correlation method.
+
+    Returns:
+        Dict with keys: labels, matrix, window, method.
+    """
+    from datetime import datetime, timedelta
+
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=days + 60)).strftime("%Y-%m-%d")
+
+    price_series = _fetch_price_series(codes, start_date, end_date)
 
     if len(price_series) < 2:
         raise ValueError(

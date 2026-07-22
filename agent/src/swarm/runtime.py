@@ -8,7 +8,6 @@ with cancellation and event callback support.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from concurrent.futures import (
     Future,
@@ -40,6 +39,7 @@ from src.swarm.task_store import (
     topological_layers,
     validate_dag,
 )
+from src.tools.mcp import invalidate_mcp_specs_cache
 from src.tools.redaction import redact_internal_paths
 from src.swarm.worker import run_worker
 
@@ -233,6 +233,10 @@ class SwarmRuntime:
         """
         run_id = run.id
         run_dir = self._store.run_dir(run_id)
+
+        # Ensure fresh MCP tool discovery for this run — prior run's cached
+        # specs may be stale if operator edited mcp_servers config between runs.
+        invalidate_mcp_specs_cache()
 
         # Mark as running
         run.status = RunStatus.running

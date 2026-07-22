@@ -7,6 +7,7 @@ Can be called before coding (to inform strategy design) or after backtest (to an
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Dict
 
 import numpy as np
@@ -30,6 +31,8 @@ def find_peaks_valleys(close: pd.Series, window: int = 5) -> dict:
     Returns:
         Dict with keys "peaks" and "valleys", each a list of integer indices.
     """
+    if window < 1:
+        raise ValueError(f"window must be >= 1, got {window}")
     n = len(close)
     if n < 2 * window + 1:
         return {"peaks": [], "valleys": []}
@@ -138,6 +141,9 @@ def trend_line_slope(close: pd.Series, window: int = 20) -> pd.Series:
     Returns:
         Series of slope values; first window-1 entries are NaN.
     """
+    # polyfit needs >=2 points; window=1 raises LinAlgError.
+    if window < 2:
+        raise ValueError(f"window must be >= 2, got {window}")
     n = len(close)
     slopes = np.full(n, np.nan)
     values = close.values.astype(float)
@@ -286,11 +292,23 @@ def broadening(close: pd.Series, window: int = 20) -> pd.Series:
 # Available pattern registry
 # ---------------------------------------------------------------------------
 
+def _trend_slope_summary(df: pd.DataFrame, window: int) -> dict:
+    """Mean rolling slope, or 0 when no finite window exists (e.g. halt gaps)."""
+    if len(df) <= window:
+        return {"mean_slope": 0.0}
+    mean = trend_line_slope(df["close"], window=window).dropna().mean()
+    # dropna().mean() is NaN when every window contains a NaN close; bare NaN
+    # is not valid JSON (options_pricing already uses allow_nan=False).
+    if mean is None or not math.isfinite(float(mean)):
+        return {"mean_slope": 0.0}
+    return {"mean_slope": float(mean)}
+
+
 _PATTERN_FUNCS = {
     "peaks_valleys": lambda df, w: find_peaks_valleys(df["close"], window=w),
     "candlestick": lambda df, w: candlestick_patterns(df["open"], df["high"], df["low"], df["close"]).value_counts().to_dict(),
     "support_resistance": lambda df, w: support_resistance(df["close"], window=w),
-    "trend_slope": lambda df, w: {"mean_slope": float(trend_line_slope(df["close"], window=w).dropna().mean())} if len(df) > w else {"mean_slope": 0},
+    "trend_slope": _trend_slope_summary,
     "head_and_shoulders": lambda df, w: {"count": int(head_and_shoulders(df["close"], window=w).sum())},
     "double_top_bottom": lambda df, w: {"double_top": int((double_top_bottom(df["close"], window=w) == 1).sum()), "double_bottom": int((double_top_bottom(df["close"], window=w) == -1).sum())},
     "triangle": lambda df, w: {"ascending": int((triangle(df["close"], window=w) == 1).sum()), "descending": int((triangle(df["close"], window=w) == -1).sum())},
@@ -330,6 +348,17 @@ def run_pattern(run_dir: str, patterns: str = "all", window: int = 10) -> str:
         if not selected:
             return json.dumps({"status": "error", "error": f"Invalid pattern name(s). Available: {', '.join(_PATTERN_FUNCS.keys())}"}, ensure_ascii=False)
 
+    if window < 1:
+        return json.dumps(
+            {"status": "error", "error": f"window must be >= 1, got {window}"},
+            ensure_ascii=False,
+        )
+    if "trend_slope" in selected and window < 2:
+        return json.dumps(
+            {"status": "error", "error": f"window must be >= 2 for trend_slope, got {window}"},
+            ensure_ascii=False,
+        )
+
     results: Dict[str, Any] = {}
     for f in ohlcv_files:
         code = f.stem.replace("ohlcv_", "")
@@ -342,7 +371,18 @@ def run_pattern(run_dir: str, patterns: str = "all", window: int = 10) -> str:
             code_results[pattern_name] = func(df, window)
         results[code] = code_results
 
-    return json.dumps({"status": "ok", "results": results, "patterns": selected, "window": window}, ensure_ascii=False, default=str)
+    try:
+        return json.dumps(
+            {"status": "ok", "results": results, "patterns": selected, "window": window},
+            ensure_ascii=False,
+            default=str,
+            allow_nan=False,
+        )
+    except ValueError as exc:
+        return json.dumps(
+            {"status": "error", "error": f"non-serializable numeric result: {exc}"},
+            ensure_ascii=False,
+        )
 
 
 class PatternTool(BaseTool):

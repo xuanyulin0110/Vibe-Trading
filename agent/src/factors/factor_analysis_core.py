@@ -60,6 +60,10 @@ def compute_group_equity(
     Returns:
         DataFrame with index=date and columns Group_1 ... Group_N holding cumulative NAV.
     """
+    if n_groups < 1:
+        # qcut/cut reject non-positive bins; range(n_groups) is also empty for <=0
+        raise ValueError(f"n_groups must be >= 1, got {n_groups}")
+
     common_dates = sorted(factor_df.index.intersection(return_df.index))
     common_codes = factor_df.columns.intersection(return_df.columns)
     if len(common_dates) == 0 or len(common_codes) == 0:

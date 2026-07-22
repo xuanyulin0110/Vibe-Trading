@@ -550,6 +550,7 @@ class AgentLoop:
         self._previous_summary: str = ""
         self._persistent_memory = persistent_memory
         self._run_iteration: int = 0
+        self._has_run = False
 
     def cancel(self) -> None:
         """Cancel the current loop.
@@ -571,8 +572,13 @@ class AgentLoop:
         Returns:
             Execution result dict.
         """
-        # Reset per-run state (safe for reuse across multiple run() calls)
-        self._cancel_event.clear()
+        # Preserve cancellation accepted while the first run is queued.  A
+        # completed loop may still be reused deliberately, so clear terminal
+        # state only after the first run has begun.
+        if self._has_run:
+            self._cancel_event.clear()
+        else:
+            self._has_run = True
         self._called_ok = set()
         self._previous_summary = ""
 

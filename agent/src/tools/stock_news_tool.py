@@ -7,11 +7,8 @@ Two public, no-auth news surfaces are wrapped behind one BaseTool contract:
   surface it rate-limits by source IP, so the request routes through the frozen,
   IP-throttled :mod:`backtest.loaders.eastmoney_client` rather than touching the
   host directly.
-* US / HK have no free no-auth article feed here: the frozen
-  :func:`backtest.loaders.yahoo_client.search` helper exposes only the search
-  endpoint's instrument ``quotes`` (not its ``news`` array), so the tool returns
-  honest related-instrument *matches* under a ``matches`` key — never instrument
-  hits relabelled as articles.
+* US / HK headlines come from Yahoo Finance's public v1 search-news surface via
+  the frozen, IP-throttled :mod:`backtest.loaders.yahoo_client`.
 
 The tool never re-implements provider plumbing and never issues an un-throttled
 request: every outbound call goes through a frozen client.
@@ -29,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from backtest.loaders import eastmoney_client, yahoo_client
@@ -172,7 +170,14 @@ def _fetch_eastmoney_news(query: str, limit: int) -> list[dict[str, Any]]:
             "type": ["cmsArticleWebOld"],
             "client": "web",
             "clientType": "web",
-            "param": {"cmsArticleWebOld": {"searchScope": "default", "sort": "default", "pageIndex": 1, "pageSize": limit}},
+            "param": {
+                "cmsArticleWebOld": {
+                    "searchScope": "default",
+                    "sort": "default",
+                    "pageIndex": 1,
+                    "pageSize": limit,
+                }
+            },
         },
         ensure_ascii=False,
     )
@@ -192,47 +197,49 @@ def _fetch_eastmoney_news(query: str, limit: int) -> list[dict[str, Any]]:
     return [_em_article(a) for a in articles if isinstance(a, dict)][:limit]
 
 
-def _yahoo_match(raw: dict[str, Any]) -> dict[str, Any]:
-    """Project one Yahoo search match into a compact headline-style record.
-
-    Yahoo's ``search`` helper returns instrument matches; each is surfaced as a
-    related-instrument headline so callers get the symbol, name and exchange.
+def _yahoo_article(raw: dict[str, Any]) -> dict[str, Any]:
+    """Project one Yahoo search-news item into the shared article shape.
 
     Args:
-        raw: A single quote dict from :func:`yahoo_client.search`.
+        raw: A single news dict from :func:`yahoo_client.search_news`.
 
     Returns:
-        A flat ``{title, symbol, exchange, quote_type}`` record.
+        A flat ``{title, url, source, published, snippet}`` record.
     """
-    name = raw.get("shortname") or raw.get("longname") or raw.get("symbol")
+    published = None
+    try:
+        timestamp = float(raw.get("providerPublishTime"))
+        published = datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    except (TypeError, ValueError, OSError, OverflowError):
+        pass
     return {
-        "title": _snippet(name),
-        "symbol": raw.get("symbol"),
-        "exchange": raw.get("exchange"),
-        "quote_type": raw.get("quoteType"),
+        "title": _snippet(raw.get("title")),
+        "url": raw.get("link"),
+        "source": raw.get("publisher"),
+        "published": published,
+        "snippet": _snippet(raw.get("summary")),
     }
 
 
-def _fetch_yahoo_matches(query: str, limit: int) -> list[dict[str, Any]]:
-    """Fetch US/HK related-instrument matches for a query via Yahoo search.
-
-    Yahoo's public search endpoint also carries a ``news`` array, but the frozen
-    :func:`yahoo_client.search` helper exposes only the instrument ``quotes``.
-    Rather than mislabel those quotes as articles, this returns them honestly as
-    related-instrument matches.
+def _fetch_yahoo_news(query: str, limit: int) -> list[dict[str, Any]]:
+    """Fetch US/HK news articles for a query via Yahoo search.
 
     Args:
         query: Free-text search term (bare ticker or keyword).
         limit: Maximum number of records to return.
 
     Returns:
-        A capped list of compact instrument-match records; empty when none.
+        A capped list of compact article records; empty when none.
 
     Raises:
         requests.RequestException: Network/HTTP failure, propagated to caller.
     """
-    matches = yahoo_client.search(query)
-    return [_yahoo_match(m) for m in matches if isinstance(m, dict)][:limit]
+    articles = yahoo_client.search_news(query, limit)
+    return [
+        _yahoo_article(article) for article in articles if isinstance(article, dict)
+    ][:limit]
 
 
 class StockNewsTool(BaseTool):
@@ -243,9 +250,7 @@ class StockNewsTool(BaseTool):
         "Fetch recent financial news headlines, read-only and no auth. Markets: "
         "China A-share (SH/SZ/BJ) returns Eastmoney news ARTICLES "
         "(title/url/source/published/snippet) under 'articles'. US (.US) and Hong "
-        "Kong (.HK) do NOT return news articles: Yahoo's public search surface "
-        "yields related-instrument MATCHES (symbol/name/exchange/quote_type), "
-        "returned under 'matches' (result_type='matches'), not 'articles'. Use "
+        "Kong (.HK) return Yahoo Finance news articles with the same fields. Use "
         "scope 'stock' with a 'code', or scope 'global' (no code) for broad "
         "China-market finance articles. "
         'Example: {"code": "600519.SH", "scope": "stock", "limit": 10}.'
@@ -296,7 +301,9 @@ class StockNewsTool(BaseTool):
         """
         scope = kwargs.get("scope", "stock")
         if scope not in ("stock", "global"):
-            return self._error(f"invalid scope: {scope!r}; expected 'stock' or 'global'")
+            return self._error(
+                f"invalid scope: {scope!r}; expected 'stock' or 'global'"
+            )
 
         limit = _clamp_limit(kwargs.get("limit"))
 
@@ -318,7 +325,9 @@ class StockNewsTool(BaseTool):
         except Exception as exc:  # noqa: BLE001 - surface any fetch failure as envelope
             logger.warning("global news fetch failed: %s", exc)
             return self._error(f"eastmoney news fetch failed: {exc}")
-        return self._ok("global", "eastmoney", {"scope": "global", "articles": articles})
+        return self._ok(
+            "global", "eastmoney", {"scope": "global", "articles": articles}
+        )
 
     def _run_stock(self, code_arg: Any, limit: int) -> str:
         """Fetch single-security headlines, routing by exchange suffix.
@@ -331,7 +340,9 @@ class StockNewsTool(BaseTool):
             A success or error JSON envelope.
         """
         if not isinstance(code_arg, str) or not code_arg.strip():
-            return self._error("missing required parameter: code (required when scope='stock')")
+            return self._error(
+                "missing required parameter: code (required when scope='stock')"
+            )
 
         code = code_arg.strip()
         suffix = _suffix_of(code)
@@ -356,26 +367,23 @@ class StockNewsTool(BaseTool):
             logger.warning("eastmoney news fetch failed for %s: %s", code, exc)
             return self._error(f"eastmoney news fetch failed: {exc}")
         return self._ok(
-            "a_share", "eastmoney", {"scope": "stock", "code": code, "articles": articles}
+            "a_share",
+            "eastmoney",
+            {"scope": "stock", "code": code, "articles": articles},
         )
 
     def _stock_via_yahoo(self, code: str, query: str, limit: int) -> str:
-        """Fetch US/HK related-instrument matches from Yahoo for one code.
-
-        Yahoo's public ``search`` surface yields instrument matches, not news
-        articles, so the payload is labelled ``matches`` (never ``articles``) to
-        avoid passing instrument hits off as headlines.
-        """
+        """Fetch US/HK news articles from Yahoo for one code."""
         market = "hk" if _suffix_of(code) == "HK" else "us"
         try:
-            matches = _fetch_yahoo_matches(query, limit)
+            articles = _fetch_yahoo_news(query, limit)
         except Exception as exc:  # noqa: BLE001 - surface any fetch failure as envelope
-            logger.warning("yahoo search fetch failed for %s: %s", code, exc)
-            return self._error(f"yahoo search fetch failed: {exc}")
+            logger.warning("yahoo news fetch failed for %s: %s", code, exc)
+            return self._error(f"yahoo news fetch failed: {exc}")
         return self._ok(
             market,
             "yahoo",
-            {"scope": "stock", "code": code, "result_type": "matches", "matches": matches},
+            {"scope": "stock", "code": code, "articles": articles},
         )
 
     @staticmethod

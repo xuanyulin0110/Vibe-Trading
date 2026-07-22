@@ -129,19 +129,23 @@ def test_configured_api_key_accepts_bearer_for_sensitive_reads(
     assert response.status_code == 200
 
 
-def test_loopback_bypasses_auth_even_when_api_key_configured(
+def test_loopback_requires_auth_when_api_key_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Loopback clients remain trusted for non-settings reads."""
+    """GHSA-7wgj: a configured key gates EVERY peer, loopback included."""
     monkeypatch.setenv("API_AUTH_KEY", "secret")
     monkeypatch.setattr(api_server, "_API_KEY", "secret")
 
     local = _local_client()
     remote = _remote_client()
 
-    # Loopback: no bearer needed → should succeed
+    # Loopback without bearer: no longer bypasses the configured key → rejected
     local_response = local.get("/runs")
-    assert local_response.status_code == 200
+    assert local_response.status_code == 401
+
+    # Loopback with bearer: accepted (this is the frontend's authenticated path)
+    local_bearer = local.get("/runs", headers={"Authorization": "Bearer secret"})
+    assert local_bearer.status_code == 200
 
     # Remote without bearer: still rejected
     remote_response = remote.get("/runs")

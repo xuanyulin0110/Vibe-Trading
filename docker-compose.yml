@@ -77,13 +77,19 @@ services:
     # reads -- this service has no separate app code of its own, just a
     # different entrypoint command into the same install.
     build: .
-    command: vibe-trading-mcp --transport http --port 8900
+    # --host 0.0.0.0: FastMCP/uvicorn's 127.0.0.1 default binds only the
+    # container's internal loopback, unreachable through Docker's port mapping.
+    # ALLOWED_HOSTS=* matches this deployment's existing no-auth LAN/VPN-wide
+    # access posture (upstream's env-var guard defaults to loopback-only and
+    # would 421 every LAN/Tailscale client); narrow it if ever exposed wider.
+    command: vibe-trading-mcp --transport http --host 0.0.0.0 --port 8900
     ports:
       - "8900:8900"
     env_file:
       - agent/.env
     environment:
       - VIBE_TRADING_TRUST_DOCKER_LOOPBACK=1
+      - VIBE_TRADING_MCP_ALLOWED_HOSTS=*
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -2,8 +2,9 @@
 
 This subdirectory contains price-based proxies for the canonical academic
 factor portfolios used as long-short benchmarks in the empirical
-asset-pricing literature. None of the original papers' prose is reproduced
-here.
+asset-pricing literature, plus one house factor sourced from this
+repository's own skill library (see the last attribution entry). None of
+the original papers' prose is reproduced here.
 
 ## Source attributions
 
@@ -27,6 +28,14 @@ here.
   *Journal of Financial Economics*, 111(1), 1-25. — BAB (low-beta
   premium; leverage-constrained investors bid up high-beta assets,
   depressing their risk-adjusted return relative to low-beta assets).
+- corr_rewire (correlation-rewiring stability score) — not sourced from
+  an academic paper: its methodology is the causal rolling rendition of
+  Mode 4 ("Correlation-Rewiring Leaderboard") of this repository's own
+  `correlation-regime` skill (`agent/src/skills/correlation-regime/`).
+  Streaming JVM reference implementation of the surrounding regime
+  machinery: https://github.com/tarvyn-analytics/corrcalc-graphs-pipeline
+  (Apache-2.0; no code from that repository is reproduced here — the
+  factor is an original pandas/numpy implementation).
 
 ## Disclosure: these are price-based proxies, not the original factors
 

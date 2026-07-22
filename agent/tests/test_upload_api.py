@@ -51,21 +51,31 @@ def test_cross_site_browser_upload_is_rejected_even_from_loopback(
     assert _existing_uploads(tmp_path) == []
 
 
-def test_loopback_upload_without_browser_origin_still_allowed_when_key_configured(
+def test_loopback_upload_requires_bearer_when_key_configured(
     client: TestClient,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # GHSA-7wgj: a configured key gates uploads even on loopback. Without a
+    # bearer the loopback upload is rejected; with the bearer it succeeds — the
+    # bundled frontend sends Authorization once the key is stored in Settings.
     monkeypatch.setenv("API_AUTH_KEY", "secret")
     monkeypatch.setattr(api_server, "_API_KEY", "secret")
 
-    response = client.post(
+    unauth = client.post(
         "/upload",
         headers={"Host": "127.0.0.1:8899"},
         files={"file": ("note.txt", b"safe", "text/plain")},
     )
+    assert unauth.status_code == 401
+    assert _existing_uploads(tmp_path) == []
 
-    assert response.status_code == 200
+    authed = client.post(
+        "/upload",
+        headers={"Host": "127.0.0.1:8899", "Authorization": "Bearer secret"},
+        files={"file": ("note.txt", b"safe", "text/plain")},
+    )
+    assert authed.status_code == 200
     assert len(_existing_uploads(tmp_path)) == 1
 
 

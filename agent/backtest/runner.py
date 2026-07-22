@@ -8,16 +8,18 @@ Usage: ``python -m backtest.runner <run_dir>``
 """
 
 import ast
+import copy
 import importlib.util
 import inspect
 import json
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, model_validator, field_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 
 try:
     from dotenv import load_dotenv
@@ -52,6 +54,17 @@ _PRICE_PANEL_COLUMNS = ("open", "high", "low", "close", "volume", "vwap", "amoun
 _FUND_PREFIX = "fund:"
 
 
+@dataclass(frozen=True)
+class DataFetchResult:
+    """Market data plus the routing metadata selected by the central registry."""
+
+    data_map: Dict[str, pd.DataFrame]
+    codes: List[str]
+    source: str
+    loader: Any
+    effective_sources: List[str]
+
+
 class BacktestConfigSchema(BaseModel):
     """Validates backtest config.json before execution."""
 
@@ -63,6 +76,10 @@ class BacktestConfigSchema(BaseModel):
     source: str = "tushare"
     interval: str = "1D"
     engine: str = "daily"
+    # Returns divide by initial_cash, so a non-positive value yields inf/NaN
+    # metrics (total_return, annual_return, ...). Reject it at the config
+    # boundary instead of letting the run produce non-finite results.
+    initial_cash: float = Field(default=1_000_000, gt=0, allow_inf_nan=False)
     fundamental_fields: Optional[Dict[str, List[str]]] = None
     event_feeds: Optional[List[Dict[str, Any]]] = None
 
@@ -259,8 +276,10 @@ def _validate_class_body(node: ast.ClassDef) -> None:
 # (it does ``import module; SignalEngine().generate(data_map)``). Blocking those
 # imports file-wide would reject strategies generated from ~12 shipped skills, so
 # we block the dangerous *use* along the executed path instead of a harmless
-# unused top-level import. Transitive reach via ``getattr``/indirection is a
-# documented residual — see the VT-001 note; this is not a kernel-level guarantee.
+# unused top-level import. Direct ``getattr``/``setattr``/``delattr`` indirection
+# onto ``os`` / forbidden modules is now rejected (see _reject_forbidden_getattr);
+# exotic reach via ``builtins.getattr`` or aliasing remains a documented residual
+# (VT-001) — this is defense-in-depth, not a kernel-level guarantee.
 _FORBIDDEN_IMPORT_MODULES = frozenset(
     {
         "socket",
@@ -302,6 +321,13 @@ _FORBIDDEN_OS_ATTRS = frozenset(
 _FORBIDDEN_BUILTINS = frozenset(
     {"eval", "exec", "compile", "__import__", "globals", "locals", "vars", "breakpoint"}
 )
+# getattr/setattr/delattr can indirect around the attribute scanner
+# (``getattr(os, "system")("id")``). We reject them ONLY when the target object
+# is ``os`` or a forbidden module — keyed off the target, not the attribute
+# string, so ``getattr(os, "sys" + "tem")`` is caught too. Legitimate dynamic
+# access on user objects (``getattr(tech, name, None)``, ``getattr(self, x)``)
+# is unaffected.
+_GETATTR_INDIRECTION = frozenset({"getattr", "setattr", "delattr"})
 _OPEN_WRITE_MODE_CHARS = frozenset("wax+")
 _SCRUB_MSG = "is not allowed inside generated strategy code"
 
@@ -350,6 +376,30 @@ def _reject_forbidden_open(node: ast.Call) -> None:
         raise ValueError(f"open() with a non-relative path {path!r} {_SCRUB_MSG}")
 
 
+def _reject_forbidden_getattr(node: ast.Call) -> None:
+    """Reject getattr/setattr/delattr indirection onto ``os`` / forbidden modules.
+
+    Closes the documented bypass ``getattr(os, "system")("id")`` — and computed
+    variants like ``getattr(os, "sys" + "tem")`` — by keying off the *target*
+    object (first positional arg), not the attribute string. Dynamic access on
+    ordinary user objects (``getattr(tech, name, None)``) is left untouched.
+    """
+    func = node.func
+    if not (isinstance(func, ast.Name) and func.id in _GETATTR_INDIRECTION):
+        return
+    if not node.args:
+        return
+    target = node.args[0]
+    if isinstance(target, ast.Name):
+        root: str | None = target.id
+    elif isinstance(target, ast.Attribute):
+        root = _attribute_root_name(target)
+    else:
+        root = None
+    if root == "os" or root in _FORBIDDEN_IMPORT_MODULES:
+        raise ValueError(f"{func.id}() indirection onto {root!r} {_SCRUB_MSG}")
+
+
 def _reject_forbidden_node(node: ast.AST) -> None:
     """Raise ``ValueError`` if a single AST node performs a forbidden operation."""
     if isinstance(node, ast.Import):
@@ -375,6 +425,7 @@ def _reject_forbidden_node(node: ast.AST) -> None:
             raise ValueError(f"Use of {node.id!r} {_SCRUB_MSG}")
     elif isinstance(node, ast.Call):
         _reject_forbidden_open(node)
+        _reject_forbidden_getattr(node)
 
 
 def _scan_runtime_reachable(tree: ast.Module) -> None:
@@ -567,6 +618,16 @@ def _normalize_codes(codes: List[str], source: str) -> List[str]:
     if source in ("okx", "ccxt"):
         return [c.replace("/", "-").upper() for c in codes]
     return codes
+
+
+def _restore_original_codes(
+    data_map: dict,
+    original_codes: List[str],
+    normalized_codes: List[str],
+) -> dict:
+    """Map provider-normalized result keys back to requested symbols."""
+    aliases = dict(zip(normalized_codes, original_codes))
+    return {aliases.get(code, code): frame for code, frame in data_map.items()}
 
 
 def _columns_required_from_factor_spec(spec: Any) -> list[str]:
@@ -877,61 +938,18 @@ def main(run_dir: Path) -> None:
         print(json.dumps({"error": f"SignalEngine interface error: {exc}"}))
         sys.exit(1)
 
-    # Data: auto split vs single loader
+    fetch_result = fetch_data_map(config)
+    data_map = fetch_result.data_map
+    codes = fetch_result.codes
+    source = fetch_result.source
+    loader = fetch_result.loader
+    config["codes"] = codes
+    config["_run_card_effective_sources"] = fetch_result.effective_sources
     interval = config.get("interval", "1D")
-
-    if source == "auto":
-        data_map = _fetch_auto(codes, config, interval)
-    else:
-        codes = _normalize_codes(codes, source)
-        config["codes"] = codes
-        LoaderCls = _get_loader(source)
-        loader = LoaderCls()
-        data_map = loader.fetch(
-            codes,
-            config.get("start_date", ""),
-            config.get("end_date", ""),
-            fields=config.get("extra_fields") or None,
-            interval=interval,
-        )
-        if data_map and len(data_map) < len(codes):
-            missing = set(codes) - set(data_map.keys())
-            logger.warning(
-                "source=%s returned data for %d/%d symbols; missing: %s",
-                source, len(data_map), len(codes), missing,
-            )
-        # Runtime fallback: try next sources in chain when primary returns empty
-        if not data_map and codes:
-            market = _detect_market(codes[0])
-            for fb_name in FALLBACK_CHAINS.get(market, []):
-                if fb_name == source or fb_name not in LOADER_REGISTRY:
-                    continue
-                fb_loader = LOADER_REGISTRY[fb_name]()
-                if not fb_loader.is_available():
-                    continue
-                fb_codes = _normalize_codes(codes, fb_name)
-                data_map = fb_loader.fetch(
-                    fb_codes, config.get("start_date", ""),
-                    config.get("end_date", ""), interval=interval,
-                )
-                if data_map:
-                    logger.info("Runtime fallback: %s -> %s", source, fb_name)
-                    source = fb_name
-                    loader = fb_loader
-                    break
-
-    # Loader-boundary OHLC sanity for every source, centralized at the one
-    # point all fetch paths converge (auto / single / runtime fallback).
-    data_map = _sanitize_data_map(data_map)
     if not data_map:
         print(json.dumps({"error": "No data fetched"}))
         sys.exit(1)
     data_map = _maybe_inject_fundamentals_for_factor_panel(data_map, config)
-
-    if source == "auto":
-        config["_run_card_effective_sources"] = sorted(_group_codes_by_source(codes))
-    else:
-        config["_run_card_effective_sources"] = [source]
 
     # Engine
     engine_type = config.get("engine", "daily")
@@ -947,9 +965,10 @@ def main(run_dir: Path) -> None:
     else:
         bars_per_year = calc_bars_per_year(interval, effective_source)
 
-    # Auto mode: wrap preloaded data in a dummy loader
-    if source == "auto":
-        loader = _AutoLoader(data_map)
+    # Every source has already been fetched, sanitized, and enriched above.
+    # Reuse that exact snapshot so provider costs and run-card provenance stay
+    # aligned with the data consumed by the engine.
+    loader = _AutoLoader(data_map)
 
     if engine_type == "options":
         from backtest.engines.options_portfolio import run_options_backtest
@@ -1029,6 +1048,13 @@ def _create_market_engine(source: str, config: dict, codes: List[str]):
         market = _detect_submarket(codes)
         return GlobalEquityEngine(config, market=market)
     else:
+        # Sources without a dedicated branch (local, stooq, ...): follow the
+        # instrument market rather than the loader name, so e.g. a local
+        # AAPL.US dataset gets US-equity execution rules instead of crypto.
+        if markets & {"us_equity", "hk_equity"}:
+            from backtest.engines.global_equity import GlobalEquityEngine
+            market = _detect_submarket(codes)
+            return GlobalEquityEngine(config, market=market)
         from backtest.engines.crypto import CryptoEngine
         return CryptoEngine(config)
 
@@ -1081,25 +1107,141 @@ def _fetch_auto(codes: List[str], config: dict, interval: str = "1D") -> dict:
         src_name = getattr(loader, "name", "unknown")
         normalized_codes = _normalize_codes(market_codes, src_name)
         fields = config.get("extra_fields") if src_name == "tushare" else None
-        result = loader.fetch(normalized_codes, start_date, end_date, fields=fields, interval=interval)
+        result = loader.fetch(
+            normalized_codes,
+            start_date,
+            end_date,
+            fields=fields,
+            interval=interval,
+        )
+        market_result = _restore_original_codes(
+            result, market_codes, normalized_codes
+        )
+        missing = [code for code in market_codes if code not in market_result]
 
-        # Runtime fallback: try remaining sources when primary returns empty
-        if not result:
-            for fb_name in FALLBACK_CHAINS.get(market, []):
-                if fb_name == src_name or fb_name not in LOADER_REGISTRY:
-                    continue
-                fb_loader = LOADER_REGISTRY[fb_name]()
-                if not fb_loader.is_available():
-                    continue
-                fb_codes = _normalize_codes(market_codes, fb_name)
-                result = fb_loader.fetch(fb_codes, start_date, end_date, interval=interval)
-                if result:
-                    logger.info("Runtime fallback: %s -> %s for %s", src_name, fb_name, market)
-                    break
+        # Retry only missing symbols so a partial primary response does not
+        # silently shrink the requested universe or refetch successful data.
+        for fb_name in FALLBACK_CHAINS.get(market, []):
+            if not missing:
+                break
+            if fb_name == src_name or fb_name not in LOADER_REGISTRY:
+                continue
+            fb_loader = LOADER_REGISTRY[fb_name]()
+            if not fb_loader.is_available():
+                continue
+            fb_codes = _normalize_codes(missing, fb_name)
+            fallback_result = fb_loader.fetch(
+                fb_codes, start_date, end_date, interval=interval
+            )
+            mapped = _restore_original_codes(fallback_result, missing, fb_codes)
+            if mapped:
+                market_result.update(mapped)
+                missing = [code for code in missing if code not in mapped]
+                logger.info(
+                    "Runtime fallback: %s -> %s for %s", src_name, fb_name, market
+                )
 
-        merged.update(result)
+        if missing:
+            raise NoAvailableSourceError(
+                f"incomplete data for {market}; missing symbols: {missing}"
+            )
+        merged.update(market_result)
 
     return merged
+
+
+def fetch_data_map(config: dict) -> DataFetchResult:
+    """Fetch and sanitize bars through the canonical loader registry.
+
+    This is the shared entry point for backtest execution and reconstruction
+    consumers. It preserves auto routing and the runtime fallback chain.
+
+    Args:
+        config: Backtest configuration containing codes, dates, source, and interval.
+
+    Returns:
+        Data and effective routing metadata. The input config is not mutated.
+    """
+    config = copy.deepcopy(config)
+    source = str(config.get("source") or "tushare")
+    codes = list(config.get("codes") or [])
+    interval = str(config.get("interval") or "1D")
+
+    if source == "auto":
+        data_map = _fetch_auto(codes, config, interval)
+        loader: Any = _AutoLoader(data_map)
+        used_sources: list[str] = []
+    else:
+        codes = _normalize_codes(codes, source)
+        primary_source = source
+        loader = _get_loader(source)()
+        data_map = loader.fetch(
+            codes,
+            config.get("start_date", ""),
+            config.get("end_date", ""),
+            fields=config.get("extra_fields") or None,
+            interval=interval,
+        )
+        used_sources = [source] if data_map else []
+        missing = [code for code in codes if code not in data_map]
+        if missing:
+            logger.warning(
+                "source=%s returned data for %d/%d symbols; missing: %s",
+                source,
+                len(data_map),
+                len(codes),
+                missing,
+            )
+        if missing:
+            market = _detect_market(codes[0])
+            for fallback_source in FALLBACK_CHAINS.get(market, []):
+                if not missing:
+                    break
+                if (
+                    fallback_source == primary_source
+                    or fallback_source not in LOADER_REGISTRY
+                ):
+                    continue
+                fallback_loader = LOADER_REGISTRY[fallback_source]()
+                if not fallback_loader.is_available():
+                    continue
+                fallback_codes = _normalize_codes(missing, fallback_source)
+                fallback_result = fallback_loader.fetch(
+                    fallback_codes,
+                    config.get("start_date", ""),
+                    config.get("end_date", ""),
+                    interval=interval,
+                )
+                mapped = _restore_original_codes(
+                    fallback_result, missing, fallback_codes
+                )
+                if mapped:
+                    data_map.update(mapped)
+                    missing = [code for code in missing if code not in mapped]
+                    if not used_sources:
+                        source = fallback_source
+                        loader = fallback_loader
+                    used_sources.append(fallback_source)
+                    logger.info(
+                        "Runtime fallback: %s -> %s", primary_source, fallback_source
+                    )
+
+        if missing:
+            raise NoAvailableSourceError(
+                f"incomplete data for source={primary_source}; missing symbols: {missing}"
+            )
+
+    data_map = _sanitize_data_map(data_map)
+    effective_sources = (
+        sorted(_group_codes_by_source(codes)) if source == "auto" else used_sources
+    )
+    return DataFetchResult(
+        data_map=data_map,
+        codes=codes,
+        source=source,
+        loader=loader,
+        effective_sources=effective_sources,
+    )
 
 
 def _sanitize_data_map(data_map: dict) -> dict:
@@ -1123,7 +1265,7 @@ def _sanitize_data_map(data_map: dict) -> dict:
 
 
 class _AutoLoader:
-    """Dummy loader for auto mode: returns pre-fetched data maps."""
+    """Loader adapter that returns a pre-fetched data map."""
 
     def __init__(self, data_map: dict):
         self._data = data_map

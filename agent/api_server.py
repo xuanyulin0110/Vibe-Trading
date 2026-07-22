@@ -9,7 +9,6 @@ infrastructure lives in ``src.api.{security,models,helpers,state}``.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -81,6 +80,7 @@ from src.api.helpers import (  # noqa: F401, E402
     AGENT_DIR,
     ENV_EXAMPLE_PATH,
     ENV_PATH,
+    LEGACY_ENV_PATH,
     RUNS_DIR,
     SESSIONS_DIR,
     UPLOADS_DIR,
@@ -274,6 +274,8 @@ from src.api.live_routes import (  # noqa: F401, E402
     _live_broker_adapter,
     _build_live_runner,
     _drive_runner,
+    _connector_verify_cache,
+    _check_connector_status,
 )
 
 # --- Alpha Zoo ---

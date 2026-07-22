@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from contextlib import suppress
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,8 @@ class ChannelRuntime:
         session_map_path: Path | None = None,
         reply_timeout_s: float = 600.0,
         poll_interval_s: float = 0.25,
+        operators: Iterable[str] | None = None,
+        channel_operators: Mapping[str, Iterable[str]] | None = None,
     ) -> None:
         self.bus = bus
         self.session_service = session_service
@@ -49,6 +52,15 @@ class ChannelRuntime:
             reply_timeout_s=reply_timeout_s,
             poll_interval_s=poll_interval_s,
         )
+        # Channel-independent (global) operators may run /pairing on any channel
+        # with cross-channel authority. Per-channel operators may run /pairing
+        # only on their own channel. Both empty by default → IM /pairing is
+        # fail-closed and pairing is managed via the authenticated CLI/REST plane.
+        self._operators: set[str] = {str(o) for o in (operators or ())}
+        self._channel_operators: dict[str, set[str]] = {
+            str(ch): {str(o) for o in ops}
+            for ch, ops in (channel_operators or {}).items()
+        }
         self.session_map_path = session_map_path or (get_data_dir() / "channels" / "sessions.json")
         self._session_map: dict[str, str] = {}
         self._consumer_task: asyncio.Task[None] | None = None
@@ -108,7 +120,31 @@ class ChannelRuntime:
     async def _handle_inbound(self, msg: InboundMessage) -> None:
         try:
             if self._is_pairing_command(msg.content):
-                reply = handle_pairing_command(msg.channel, self._pairing_subcommand_text(msg.content))
+                is_operator, is_global = self._resolve_operator(msg.channel, msg.sender_id)
+                if not is_operator:
+                    logger.warning(
+                        "Rejected /pairing from non-operator %s on %s",
+                        msg.sender_id,
+                        msg.channel,
+                    )
+                    await self.bus.publish_outbound(
+                        OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=(
+                                "Not authorized: pairing management is restricted to "
+                                "configured operators."
+                            ),
+                            metadata={PAIRING_COMMAND_META_KEY: True, "unauthorized": True},
+                        )
+                    )
+                    return
+                reply = handle_pairing_command(
+                    msg.channel,
+                    self._pairing_subcommand_text(msg.content),
+                    requesting_channel=msg.channel,
+                    is_global_operator=is_global,
+                )
                 await self.bus.publish_outbound(
                     OutboundMessage(
                         channel=msg.channel,
@@ -251,6 +287,48 @@ class ChannelRuntime:
         if removed is not None:
             self._save_session_map()
         return removed
+
+    def _resolve_operator(self, channel: str, sender_id: str | None) -> tuple[bool, bool]:
+        """Resolve pairing authorization for a sender.
+
+        Args:
+            channel: The channel the command arrived on.
+            sender_id: The inbound message sender id.
+
+        Returns:
+            ``(is_operator, is_global_operator)``. ``is_operator`` is ``True``
+            for global operators or per-channel operators of ``channel``;
+            ``is_global_operator`` is ``True`` only for channel-independent
+            operators, who may act cross-channel with full request details.
+        """
+        sid = str(sender_id)
+        is_global = sid in self._operators
+        is_channel = sid in self._channel_operators.get(channel, set())
+        return (is_global or is_channel, is_global)
+
+    @staticmethod
+    def operators_from_config(
+        config: Mapping[str, Any] | None,
+    ) -> tuple[set[str], dict[str, set[str]]]:
+        """Extract global and per-channel operators from a channels config dict.
+
+        Args:
+            config: The channels config mapping (as produced by
+                ``ChannelsConfig.model_dump``). Top-level ``operators`` are
+                global; a per-channel section's own ``operators`` list is
+                channel-scoped.
+
+        Returns:
+            ``(global_operators, channel_operators)``.
+        """
+        if not config:
+            return set(), {}
+        global_ops = {str(o) for o in (config.get("operators") or ())}
+        channel_ops: dict[str, set[str]] = {}
+        for key, value in config.items():
+            if isinstance(value, Mapping) and value.get("operators"):
+                channel_ops[str(key)] = {str(o) for o in value["operators"]}
+        return global_ops, channel_ops
 
     @staticmethod
     def _is_pairing_command(content: str) -> bool:

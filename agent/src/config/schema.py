@@ -440,6 +440,13 @@ class ChannelsConfig(ConfigBase):
     send_tool_hints: bool = False
     send_max_retries: int = Field(default=2, ge=1, le=10)
     reply_timeout_s: float = Field(default=600.0, ge=1.0, le=86400.0)
+    # Channel-independent operator allowlist. Sender IDs listed here may run
+    # ``/pairing`` control-plane commands from any IM channel with cross-channel
+    # authority. Empty by default (fail closed): with no operators configured,
+    # IM ``/pairing`` is rejected and pairing is managed only through the
+    # authenticated CLI/REST admin plane. Per-channel operators (channel-scoped
+    # authority) live under each channel section's own ``operators`` list.
+    operators: list[str] = Field(default_factory=list)
 
 
 class AgentConfig(ConfigBase):

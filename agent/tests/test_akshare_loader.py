@@ -63,6 +63,10 @@ class TestIsForex:
     def test_fx_suffix_matches(self) -> None:
         assert _is_forex("EURUSD.FX")
 
+    def test_slash_form_matches(self) -> None:
+        # Canonical project form — required for the mt5 → akshare fallback.
+        assert _is_forex("EUR/USD")
+
     def test_a_share_does_not_match(self) -> None:
         assert not _is_forex("600519.SH")
 

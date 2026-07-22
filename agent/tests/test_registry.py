@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pandas as pd
 import pytest
 
 from backtest.loaders.base import DataLoaderProtocol, NoAvailableSourceError
@@ -144,10 +143,10 @@ class TestFallbackChains:
             assert len(chain) > 0, f"Fallback chain for {market} is empty"
 
     def test_crypto_chain_includes_yfinance_fallback(self) -> None:
-        """yfinance is the third-tier fallback for crypto when OKX and CCXT fail."""
+        """yfinance is a fallback for crypto when OKX, Binance and CCXT fail."""
         assert "yfinance" in FALLBACK_CHAINS["crypto"]
-        # OKX and CCXT should still be preferred
-        assert FALLBACK_CHAINS["crypto"][:2] == ["okx", "ccxt"]
+        # OKX, Binance and CCXT should be preferred in that order
+        assert FALLBACK_CHAINS["crypto"][:3] == ["okx", "binance", "ccxt"]
 
     def test_chains_ordered_by_ip_ban_risk(self) -> None:
         """Equity chains lead with throttle-tolerant public sources and trail
@@ -157,10 +156,10 @@ class TestFallbackChains:
         ]
         assert FALLBACK_CHAINS["us_equity"] == [
             "yahoo", "stooq", "sina", "eastmoney", "yfinance", "tiingo", "fmp",
-            "finnhub", "alphavantage", "akshare", "local",
+            "finnhub", "alphavantage", "longbridge", "akshare", "local",
         ]
         assert FALLBACK_CHAINS["hk_equity"] == [
-            "eastmoney", "yahoo", "futu", "yfinance", "akshare", "local",
+            "eastmoney", "yahoo", "futu", "yfinance", "akshare", "longbridge", "local",
         ]
 
     def test_us_equity_includes_sina_fallback(self) -> None:
@@ -177,11 +176,13 @@ class TestFallbackChains:
 
     def test_unchanged_chains_preserved(self) -> None:
         """crypto/futures/fund/macro/forex chains must be left untouched."""
-        assert FALLBACK_CHAINS["crypto"] == ["okx", "ccxt", "yfinance", "local"]
+        assert FALLBACK_CHAINS["crypto"] == ["okx", "binance", "ccxt", "yfinance", "local"]
         assert FALLBACK_CHAINS["futures"] == ["tushare", "akshare", "local"]
         assert FALLBACK_CHAINS["fund"] == ["tushare", "akshare", "local"]
         assert FALLBACK_CHAINS["macro"] == ["akshare", "tushare", "local"]
-        assert FALLBACK_CHAINS["forex"] == ["akshare", "yfinance", "local"]
+        # mt5 heads the forex chain (terminal feed when attached), degrading to
+        # the previous chain unchanged.
+        assert FALLBACK_CHAINS["forex"] == ["mt5", "akshare", "yfinance", "local"]
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +198,12 @@ class TestValidSources:
             "finnhub", "alphavantage", "tiingo", "fmp",
         }
         assert new_sources <= VALID_SOURCES
+
+    def test_includes_binance(self) -> None:
+        """Binance was added as a dedicated crypto source alongside OKX so the
+        market_data fallback chain can fall through without aliasing CCXT. A
+        config with ``source: binance`` must validate against VALID_SOURCES."""
+        assert "binance" in VALID_SOURCES
 
     def test_covers_all_registered_loaders(self) -> None:
         """Every registered loader name must be an accepted config source so a

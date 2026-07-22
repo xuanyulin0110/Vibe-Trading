@@ -78,6 +78,19 @@ def test_requesty_capabilities_mirror_openrouter() -> None:
     assert requesty.send_reasoning_content is False
 
 
+def test_spark_capabilities_use_generic_openai_path() -> None:
+    """iFlytek Spark rides the plain OpenAI-compatible path; iflytek is an alias."""
+    spark = get_provider_capabilities("spark", "4.0Ultra")
+
+    assert spark.name == "spark"
+    assert spark.api_key_env == "SPARK_API_KEY"
+    assert spark.base_url_env == "SPARK_BASE_URL"
+    assert spark.capture_reasoning is False
+    assert spark.send_reasoning_content is False
+    assert spark.openrouter_reasoning_body is False
+    assert get_provider_capabilities("iflytek", "4.0Ultra") is spark
+
+
 def test_reasoning_effort_extra_body_is_openrouter_only() -> None:
     """LANGCHAIN_REASONING_EFFORT should not leak into official DeepSeek payloads."""
     import src.providers.llm as llm_mod
@@ -180,6 +193,43 @@ def test_kimi_inference_respects_custom_user_agent() -> None:
     moonshot = get_provider_capabilities(None, "kimi-k2.6")
     assert moonshot.name == "moonshot"
     assert "User-Agent" in moonshot.default_headers
+
+
+def test_nvidia_provider_uses_bearer_auth_with_compatibility_user_agent() -> None:
+    """NVIDIA needs a provider UA preset, not a duplicate secret header."""
+    nvidia = get_provider_capabilities("nvidia-nim", "nvidia/nemotron")
+
+    assert nvidia.name == "nvidia"
+    assert nvidia.api_key_env == "NVIDIA_API_KEY"
+    assert nvidia.base_url_env == "NVIDIA_BASE_URL"
+    assert nvidia.default_headers["User-Agent"].startswith("Vibe-Trading/")
+    assert "X-NVIDIA-API-Key" not in nvidia.default_headers
+
+
+def test_nvidia_build_passes_only_capability_headers() -> None:
+    """NVIDIA's preset must reach ChatOpenAI without secret duplication."""
+    import src.providers.llm as llm_mod
+
+    captured: dict = {}
+
+    class _FakeChatOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    env = {
+        "LANGCHAIN_PROVIDER": "nvidia",
+        "NVIDIA_API_KEY": "nvapi-test",
+        "NVIDIA_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "LANGCHAIN_MODEL_NAME": "nvidia/nemotron-3-ultra-550b-a55b",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        with patch.object(llm_mod, "ChatOpenAIWithReasoning", _FakeChatOpenAI):
+            llm_mod._dotenv_loaded = True
+            build_llm()
+
+    assert captured["vibe_provider"] == "nvidia"
+    assert captured["default_headers"]["User-Agent"].startswith("Vibe-Trading/")
+    assert "X-NVIDIA-API-Key" not in captured["default_headers"]
 
 
 def test_deepseek_native_adapter_is_used_when_available(monkeypatch) -> None:

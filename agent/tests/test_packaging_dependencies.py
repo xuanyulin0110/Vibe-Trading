@@ -46,6 +46,29 @@ def test_harmonic_backend_is_available_as_an_optional_extra() -> None:
     assert "pyharmonics" in harmonic_extra
 
 
+def test_longbridge_sdk_is_optional_and_available_as_an_extra() -> None:
+    """Broker SDK dependencies must not perturb every baseline installation."""
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+
+    core_dependencies = {
+        _normalized_requirement_name(requirement)
+        for requirement in pyproject["project"]["dependencies"]
+    }
+    requirements_txt = {
+        _normalized_requirement_name(line)
+        for line in (ROOT / "agent" / "requirements.txt").read_text().splitlines()
+        if line and not line.startswith("#")
+    }
+    longbridge_extra = {
+        _normalized_requirement_name(requirement)
+        for requirement in pyproject["project"]["optional-dependencies"]["longbridge"]
+    }
+
+    assert "longbridge" not in core_dependencies
+    assert "longbridge" not in requirements_txt
+    assert "longbridge" in longbridge_extra
+
+
 def test_channel_core_websocket_dependency_is_declared_for_baseline_installs() -> None:
     """The built-in WebSocket gateway imports websockets at module import time."""
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
@@ -113,3 +136,20 @@ def test_channel_optional_extras_cover_all_sdk_backed_adapters() -> None:
         "wecom-aibot-sdk",
     }
     assert expected_packages.issubset(channel_extra)
+def test_development_extra_includes_bounded_style_tools() -> None:
+    """Contributor style commands should be installed by the dev extra."""
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    dev_extra = pyproject["project"]["optional-dependencies"]["dev"]
+
+    assert "black>=24.0,<27" in dev_extra
+    assert "ruff>=0.9,<1" in dev_extra
+
+
+def test_slack_markdown_dependency_uses_a_published_version_range() -> None:
+    """Both Slack extras should use the same resolvable dependency range."""
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    extras = pyproject["project"]["optional-dependencies"]
+
+    expected = "slackify-markdown>=0.2.4,<1"
+    assert expected in extras["slack"]
+    assert expected in extras["channels"]

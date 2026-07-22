@@ -15,12 +15,20 @@ MANDATE_SCHEMA_VERSION = 1
 
 
 class InstrumentType(str, Enum):
-    """Instrument classes the broker may report or accept."""
+    """Instrument classes the broker may report or accept.
+
+    ``CFD`` covers margin contracts-for-difference that are not spot forex
+    pairs (MT5 metals like XAUUSD, index/energy/crypto CFDs). Like ``OPTION``
+    it has no universe asset-class bucket and is admitted only when the user's
+    mandate explicitly lists ``"cfd"`` in ``allowed_instruments``.
+    """
 
     EQUITY = "equity"
     ETF = "etf"
     OPTION = "option"
     CRYPTO = "crypto"
+    FOREX = "forex"
+    CFD = "cfd"
 
 
 class AssetClass(str, Enum):
@@ -32,6 +40,7 @@ class AssetClass(str, Enum):
     CN_EQUITY = "cn_equity"
     IN_EQUITY = "in_equity"
     CRYPTO = "crypto"
+    FOREX = "forex"
 
 
 @dataclass(frozen=True)

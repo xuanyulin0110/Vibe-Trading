@@ -87,6 +87,12 @@ class TestIntervalMap:
     def test_unknown_lowercased(self):
         assert _to_yahoo_interval("5m") == "5m"
 
+    def test_one_minute_not_mapped_to_month(self):
+        assert _to_yahoo_interval("1m") == "1m"
+        assert _to_yahoo_interval("1M") == "1mo"
+        assert _to_yahoo_interval("15m") == "15m"
+        assert _to_yahoo_interval("30m") == "30m"
+
     def test_empty_defaults_daily(self):
         assert _to_yahoo_interval("") == "1d"
 

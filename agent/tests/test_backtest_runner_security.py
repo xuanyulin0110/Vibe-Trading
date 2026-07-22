@@ -194,6 +194,68 @@ def test_signal_engine_allows_realistic_pandas_strategy(tmp_path) -> None:
     assert hasattr(module, "SignalEngine")
 
 
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "getattr(os, 'system')('id')",
+        "getattr(os, 'sys' + 'tem')('id')",  # computed attr name; target-keyed check still catches it
+        "getattr(os, 'popen')('id')",
+        "setattr(os, 'x', 1)",
+    ],
+    ids=["getattr_system", "getattr_computed", "getattr_popen", "setattr_os"],
+)
+def test_signal_engine_rejects_getattr_indirection_onto_os(tmp_path, expr) -> None:
+    # GHSA-jqmf F8 residual: `import os` is allowed and the attribute scanner
+    # never sees ".system", so getattr(os, "system")("id") previously slipped
+    # through. The target-keyed getattr/setattr/delattr guard must reject it.
+    signal_file = tmp_path / "signal_engine.py"
+    signal_file.write_text(
+        "\n".join(
+            [
+                '"""x."""',
+                "import os",
+                "class SignalEngine:",
+                "    def generate(self, *args, **kwargs):",
+                f"        return {expr}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="not allowed inside generated strategy code"):
+        _load_module_from_file(signal_file, _module_name())
+
+
+def test_signal_engine_allows_getattr_on_user_objects(tmp_path) -> None:
+    # Dynamic attribute access on ordinary user objects (self, a DataFrame, an
+    # indicator object) is legitimate and common — the bundled harmonic example
+    # uses getattr(tech, name, None) — so the F8 guard must NOT reject it.
+    signal_file = tmp_path / "signal_engine.py"
+    signal_file.write_text(
+        "\n".join(
+            [
+                '"""Strategy using dynamic attribute access on user objects."""',
+                "from typing import Dict",
+                "import pandas as pd",
+                "class SignalEngine:",
+                "    def __init__(self, lookback: int = 20):",
+                "        self.lookback = lookback",
+                "    def generate(self, data_map: Dict[str, pd.DataFrame]):",
+                "        out = {}",
+                "        window = getattr(self, 'lookback', 20)",
+                "        for code, df in data_map.items():",
+                "            close = getattr(df, 'close', None)",
+                "            out[code] = close.rolling(window).mean() if close is not None else df",
+                "        return out",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    module = _load_module_from_file(signal_file, _module_name())
+    assert hasattr(module, "SignalEngine")
+
+
 def test_signal_engine_allows_unreachable_network_helper(tmp_path) -> None:
     # Mirrors the bundled skill examples: a top-level ``import requests`` plus a
     # standalone ``_fetch_okx`` data-fetch helper that generate() never calls.

@@ -19,6 +19,33 @@ export function isAuthRequiredError(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 401 || error.status === 403);
 }
 
+export interface CorrelationResponse {
+  labels: string[];
+  matrix: number[][];
+}
+
+export interface RegimeEpisode {
+  start: string;
+  end: string | null;
+}
+
+export interface CorrelationRegimeResponse {
+  labels: string[];
+  dates: string[];
+  density: (number | null)[];
+  smoothed: (number | null)[];
+  fused: number[];
+  episodes: RegimeEpisode[];
+  params: {
+    days: number;
+    corr_window: number;
+    edge_threshold: number;
+    smooth_window: number;
+    enter_threshold: number;
+    exit_threshold: number;
+  };
+}
+
 async function errorFromResponse(res: Response): Promise<ApiError> {
   let detail = `HTTP ${res.status}`;
   try {
@@ -151,6 +178,14 @@ export interface DeploymentEquityResponse {
 
 export const api = {
   uploadFile,
+  getCorrelation: (codes: string, days: number, method: "pearson" | "spearman") =>
+    request<CorrelationResponse>(
+      `/correlation?codes=${encodeURIComponent(codes)}&days=${encodeURIComponent(String(days))}&method=${encodeURIComponent(method)}`,
+    ),
+  getCorrelationRegime: (codes: string, days: number) =>
+    request<CorrelationRegimeResponse>(
+      `/correlation/regime?codes=${encodeURIComponent(codes)}&days=${encodeURIComponent(String(days))}`,
+    ),
   listRuns: (limit?: number) => request<RunListItem[]>(`/runs${limit ? `?limit=${encodeURIComponent(String(limit))}` : ""}`),
   getRun: (id: string, params: RunDetailParams = {}) => {
     const q = new URLSearchParams();
@@ -309,6 +344,10 @@ export const api = {
   // Read the persistent runtime status across all authorized brokers (SPEC §7.5).
   // Polled by the RunnerStatus panel; a plain authenticated GET, never a chat message.
   getLiveStatus: (signal?: AbortSignal) => request<LiveStatus>("/live/status", { signal }),
+  verifyConnector: (profileId: string) =>
+    request<ConnectorVerifyResponse>(`/live/connectors/${encodeURIComponent(profileId)}/verify?force=true`, {
+      method: "POST",
+    }),
   authorizeLive: (broker: string) =>
     request<LiveAuthorizeResponse>("/live/authorize", {
       method: "POST",
@@ -353,6 +392,7 @@ export interface LLMProviderOption {
   base_url_env: string;
   default_model: string;
   default_base_url: string;
+  base_url_options?: string[];
   api_key_required: boolean;
   auth_type?: string;
   login_command?: string | null;
@@ -1049,6 +1089,36 @@ export interface LiveBrokerAuthStatus {
   broker: string;
   oauth_token_present: boolean;
   is_live_broker: boolean;
+  /** Optional during rolling upgrades from OAuth-only runtime responses. */
+  profile_id?: string | null;
+  transport?: string | null;
+  connection_state?: string | null;
+  configured?: boolean | null;
+  credential_source?: string | null;
+  sdk_installed?: boolean | null;
+  last_checked_at?: string | null;
+  environment_identity?: string | null;
+  readonly?: boolean | null;
+  capabilities?: string[] | null;
+  error_code?: string | null;
+  error?: string | null;
+}
+
+export interface ConnectorVerifyResponse {
+  status?: string;
+  profile_id?: string | null;
+  transport?: string | null;
+  connection_state?: string | null;
+  configured?: boolean | null;
+  credential_source?: string | null;
+  sdk_installed?: boolean | null;
+  last_checked_at?: string | null;
+  environment_identity?: string | null;
+  readonly?: boolean | null;
+  capabilities?: string[] | null;
+  error_code?: string | null;
+  error?: string | null;
+  [key: string]: unknown;
 }
 
 /** One broker entry in the `GET /live/status` response. */

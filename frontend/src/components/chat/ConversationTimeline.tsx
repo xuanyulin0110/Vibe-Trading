@@ -18,24 +18,31 @@ export const ConversationTimeline = memo(function ConversationTimeline({ message
     const container = containerRef.current;
     if (!container || userIndices.length === 0) return;
 
+    let rafId = 0;
     const onScroll = () => {
-      const rect = container.getBoundingClientRect();
-      const mid = rect.top + rect.height / 2;
-      let closest = userIndices[0];
-      let minDist = Infinity;
-      for (const idx of userIndices) {
-        const el = container.querySelector(`[data-msg-idx="${idx}"]`);
-        if (!el) continue;
-        const elRect = el.getBoundingClientRect();
-        const dist = Math.abs(elRect.top - mid);
-        if (dist < minDist) { minDist = dist; closest = idx; }
-      }
-      setActiveIdx(closest);
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        const rect = container.getBoundingClientRect();
+        const mid = rect.top + rect.height / 2;
+        let closest = userIndices[0];
+        let minDist = Infinity;
+        for (const idx of userIndices) {
+          const el = container.querySelector(`[data-msg-idx="${idx}"]`);
+          if (!el) continue;
+          const elRect = el.getBoundingClientRect();
+          const dist = Math.abs(elRect.top - mid);
+          if (dist < minDist) { minDist = dist; closest = idx; }
+        }
+        setActiveIdx(closest);
+      });
     };
 
     container.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
-    return () => container.removeEventListener("scroll", onScroll);
+    return () => {
+      cancelAnimationFrame(rafId);
+      container.removeEventListener("scroll", onScroll);
+    };
   }, [containerRef, userIndices]);
 
   const scrollTo = useCallback((idx: number) => {

@@ -22,8 +22,11 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: CI env var gate
-        run: python tools/ci_env_var_gate.py
+      - name: Repository safety gates
+        run: bash tools/ci_grep_gates.sh
+
+      - name: Test environment variable gate
+        run: pytest tools/test_ci_env_var_gate.py -q
 
       - name: Syntax check
         run: |
@@ -41,7 +44,7 @@ jobs:
         # the suite never silently switches state on env presence.
         run: pytest --ignore=agent/tests/e2e_backtest --ignore=agent/tests/test_e2e_harness_v2.py --cov=agent --cov-report=term-missing --cov-report=xml --tb=short -q
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20"
           cache: npm

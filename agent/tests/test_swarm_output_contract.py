@@ -19,9 +19,14 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+import pytest
+
+from src.agent.tools import BaseTool, ToolRegistry
+from src.providers.chat import LLMResponse, ToolCallRequest
 from src.swarm.models import (
     RunStatus,
     SwarmAgentSpec,
+    SwarmEvent,
     SwarmRun,
     SwarmTask,
     WorkerResult,
@@ -29,11 +34,14 @@ from src.swarm.models import (
 from src.swarm.store import SwarmStore
 from src.swarm.worker import (
     _classify_deliverable,
+    _collect_artifacts,
     _is_data_agent,
     _is_error_result,
     _report_written,
+    run_worker,
 )
 import src.swarm.runtime as rt
+import src.swarm.worker as worker_mod
 
 PLAN_STUB = (
     "### Phase 1 — Plan\n"
@@ -206,3 +214,118 @@ def test_is_error_result_other_status_values():
     not error envelopes (the worker still credits them as a tool call)."""
     assert _is_error_result('{"status": "degenerate", "warning": "T=0"}') is False
     assert _is_error_result('{"status": "warning"}') is False
+
+
+class _ResultTool(BaseTool):
+    """Return one canned result or raise to exercise ToolRegistry normalization."""
+
+    name = "market_probe"
+    description = "Return a canned market result."
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, result: str, *, raises: bool = False) -> None:
+        self._result = result
+        self._raises = raises
+
+    def execute(self, **kwargs) -> str:
+        if self._raises:
+            raise RuntimeError("local probe failed")
+        return self._result
+
+
+class _ScriptedLLM:
+    def __init__(self) -> None:
+        self._responses = [
+            LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCallRequest(id="call-1", name="market_probe", arguments={})
+                ],
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="Completed the requested market analysis with a clear conclusion.",
+                tool_calls=[],
+                finish_reason="stop",
+            ),
+        ]
+
+    def stream_chat(self, messages, tools=None, timeout=None, on_text_chunk=None):
+        return self._responses.pop(0)
+
+
+@pytest.mark.parametrize(
+    ("result", "raises", "expected_event_status", "expected_worker_status"),
+    [
+        ('{"status": "ok", "data": [1]}', False, "ok", "completed"),
+        ('{"status": "error", "trace": "...', False, "error", "incomplete"),
+        ("", True, "error", "incomplete"),
+    ],
+)
+def test_tool_result_event_status_and_evidence_credit_agree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    result: str,
+    raises: bool,
+    expected_event_status: str,
+    expected_worker_status: str,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(_ResultTool(result, raises=raises))
+    monkeypatch.setattr(
+        worker_mod, "build_swarm_registry", lambda *args, **kwargs: registry
+    )
+    monkeypatch.setattr(worker_mod, "ChatLLM", lambda *args, **kwargs: _ScriptedLLM())
+
+    events: list[SwarmEvent] = []
+    worker_result = run_worker(
+        agent_spec=SwarmAgentSpec(
+            id="analyst",
+            role="Analyst",
+            system_prompt="Analyse the result.",
+            tools=["market_probe"],
+            max_iterations=3,
+        ),
+        task=SwarmTask(
+            id="task", agent_id="analyst", prompt_template="Probe the market."
+        ),
+        upstream_summaries={},
+        user_vars={},
+        run_dir=tmp_path,
+        event_callback=events.append,
+    )
+
+    tool_result = next(event for event in events if event.type == "tool_result")
+    assert tool_result.data["status"] == expected_event_status
+    assert worker_result.status == expected_worker_status
+
+
+def test_collect_artifacts_recurses_and_returns_sorted_run_relative_paths(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "run" / "artifacts" / "analyst"
+    (artifact_dir / "nested").mkdir(parents=True)
+    (artifact_dir / "other").mkdir()
+    (artifact_dir / "summary.md").write_text("summary", encoding="utf-8")
+    (artifact_dir / "nested" / "report.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "other" / "report.json").write_text("{}", encoding="utf-8")
+
+    assert _collect_artifacts(artifact_dir) == [
+        "artifacts/analyst/nested/report.json",
+        "artifacts/analyst/other/report.json",
+        "artifacts/analyst/summary.md",
+    ]
+
+
+def test_collect_artifacts_rejects_symlink_escape(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "run" / "artifacts" / "analyst"
+    artifact_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private", encoding="utf-8")
+    escape = artifact_dir / "escape.txt"
+    try:
+        escape.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available on this platform")
+
+    assert _collect_artifacts(artifact_dir) == []

@@ -81,7 +81,7 @@ class TestCliInit:
         env_path = tmp_path / ".env"
 
         with patch.object(cli, "_INIT_ENV_PATH", env_path), \
-             patch.object(cli.IntPrompt, "ask", return_value=13), \
+             patch.object(cli.IntPrompt, "ask", return_value=17), \
              patch.object(
                  cli.Prompt,
                  "ask",
@@ -106,7 +106,7 @@ class TestCliInit:
         env_path = tmp_path / ".env"
 
         with patch.object(cli, "_INIT_ENV_PATH", env_path), \
-             patch.object(cli.IntPrompt, "ask", return_value=14), \
+             patch.object(cli.IntPrompt, "ask", return_value=18), \
              patch.object(
                  cli.Prompt,
                  "ask",

@@ -182,6 +182,60 @@ def test_mcp_server_exposes_well_known_tool_names() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Shell-tool opt-in policy (GHSA-6wjh-cc6v-xfrx / GHSA-m768-22r9-h4x7)
+#
+# The bash / background_run tools run arbitrary OS commands. The MCP server must
+# NOT register them unless the operator explicitly opts in — for EVERY transport.
+# stdio previously force-enabled them with no opt-out; that is the regression
+# these tests guard against.
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_server_module_default_shell_tools_off() -> None:
+    """The module-level default must be fail-closed (no shell tools)."""
+    mod = _import_mcp_server()
+
+    assert mod._include_shell_tools is False
+
+
+def test_mcp_resolve_shell_tools_off_without_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No CLI flag + no env var => shell tools stay off, regardless of transport."""
+    mod = _import_mcp_server()
+    monkeypatch.setattr(mod, "_env_shell_tools_enabled", lambda: False)
+
+    assert mod._resolve_include_shell_tools(False) is False
+
+
+def test_mcp_resolve_shell_tools_cli_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The --enable-shell-tools flag turns shell tools on even with env unset."""
+    mod = _import_mcp_server()
+    monkeypatch.setattr(mod, "_env_shell_tools_enabled", lambda: False)
+
+    assert mod._resolve_include_shell_tools(True) is True
+
+
+def test_mcp_resolve_shell_tools_env_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """VIBE_TRADING_ENABLE_SHELL_TOOLS=1 turns shell tools on without the flag."""
+    mod = _import_mcp_server()
+    monkeypatch.setattr(mod, "_env_shell_tools_enabled", lambda: True)
+
+    assert mod._resolve_include_shell_tools(False) is True
+
+
+def test_mcp_registry_omits_shell_tools_under_default_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A registry built with the server's fail-closed default omits bash tools."""
+    from src.tools import build_registry
+
+    monkeypatch.delenv("VIBE_TRADING_ENABLE_SHELL_TOOLS", raising=False)
+    mod = _import_mcp_server()
+
+    registry = build_registry(include_shell_tools=mod._include_shell_tools)
+
+    assert "bash" not in registry.tool_names
+    assert "background_run" not in registry.tool_names
+
+
 class _RecordingRegistry:
     """Tiny registry stub that records MCP wrapper payloads."""
 

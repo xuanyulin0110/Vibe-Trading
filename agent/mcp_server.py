@@ -30,9 +30,15 @@ Also surfaces two MCP prompts:
   YAML presets in src/swarm/presets/.
 
 Usage:
-    python mcp_server.py                     # stdio transport (default)
-    python mcp_server.py --transport http    # Streamable HTTP transport for network clients
-    python mcp_server.py --transport sse     # legacy SSE transport (kept for older clients)
+    python mcp_server.py                    # stdio transport (default)
+    python mcp_server.py --transport sse    # legacy SSE transport (GET /sse + POST /messages/)
+    python mcp_server.py --transport http   # Streamable HTTP transport (single POST/GET /mcp endpoint)
+
+The ``http`` (Streamable HTTP) transport is the current MCP spec default
+(2025-03-26+). Modern clients (e.g. QwenPaw, and clients that negotiate by
+POSTing an InitializeRequest) require it; the legacy ``sse`` transport is
+deprecated. The single endpoint is served at ``/mcp``, so point HTTP clients
+at ``http://<host>:<port>/mcp`` (NOT ``/sse``, which is a legacy-SSE artifact).
 
 OpenClaw config (~/.openclaw/config.yaml):
     skills:
@@ -56,7 +62,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -88,14 +93,229 @@ logger = logging.getLogger(__name__)
 _skills_loader = None
 _registry = None
 _goal_store = None
-_include_shell_tools = True
+# Fail-closed default: the bash / background_run shell tools are a remote
+# code-execution surface once the MCP server is reachable by any client (stdio,
+# SSE, or Streamable HTTP), so they stay OFF unless an operator explicitly opts
+# in. main() may flip this on via --enable-shell-tools or the
+# VIBE_TRADING_ENABLE_SHELL_TOOLS env var. Keeping the module-level default off
+# means an ASGI/import deployment that never calls main() also stays safe.
+_include_shell_tools = False
 
 
 def _env_shell_tools_enabled() -> bool:
-    """Return whether shell tools were explicitly enabled for network MCP."""
+    """Return whether shell tools were explicitly enabled via the environment."""
     from src.config.accessor import get_env_config
 
     return get_env_config().api.vibe_trading_enable_shell_tools
+
+
+def _resolve_include_shell_tools(cli_opt_in: bool) -> bool:
+    """Resolve whether the MCP server should register shell tools.
+
+    Shell tools (``bash`` / ``background_run``) run arbitrary OS commands and are
+    an RCE surface regardless of transport. They are therefore disabled for every
+    transport unless the operator explicitly opts in. Transport type never
+    implicitly grants shell access: previously ``stdio`` force-enabled these tools
+    with no opt-out (GHSA-6wjh-cc6v-xfrx), which also widened the reachable
+    surface of the ``bash`` OS-command-injection issue (GHSA-m768-22r9-h4x7).
+
+    Args:
+        cli_opt_in: Whether ``--enable-shell-tools`` was passed on the command line.
+
+    Returns:
+        True only when the operator opted in via the flag or the
+        ``VIBE_TRADING_ENABLE_SHELL_TOOLS`` environment variable.
+    """
+    return bool(cli_opt_in) or _env_shell_tools_enabled()
+
+
+# ---------------------------------------------------------------------------
+# Network-transport DNS-rebinding hardening (GHSA-p3c9)
+#
+# The stdio transport is a private parent/child pipe and needs no host guard.
+# The network transports (``--transport sse`` / ``http``) bind a TCP port, so
+# a page in the user's browser could POST to the local MCP endpoint via
+# DNS-rebinding and reach every MCP tool. fastmcp ships NO host/origin
+# protection, so we wrap the ASGI app with a Host allow-list
+# (_HostGuardMiddleware) plus an Origin allow-list before the MCP session is
+# reached. Default = loopback-only, so a local HTTP/SSE MCP still works.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_MCP_ALLOWED_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def _normalize_host(host: str) -> str:
+    """Normalize a Host header value (or allow-list entry) for comparison.
+
+    Strips the port and any IPv6 brackets, then lowercases: ``[::1]:8900``
+    becomes ``::1``, ``Example.COM:8900`` becomes ``example.com``. A value
+    with more than one colon and no brackets is treated as a bare IPv6
+    literal and kept whole (never split into a fake ``host:port`` pair).
+
+    Args:
+        host: Raw Host header value or allow-list entry.
+
+    Returns:
+        The comparable hostname, lowercased.
+    """
+    value = host.strip()
+    if value.startswith("["):
+        # Bracketed IPv6 literal, optionally followed by ``:port``.
+        end = value.find("]")
+        if end != -1:
+            return value[1:end].lower()
+    elif value.count(":") == 1:
+        # ``name:port`` — bare IPv6 (multiple colons) is kept whole.
+        value = value.rsplit(":", 1)[0]
+    return value.lower()
+
+
+def _parse_allowed_hosts(raw: str | None) -> list[str]:
+    """Parse ``VIBE_TRADING_MCP_ALLOWED_HOSTS`` into a Host/Origin allow-list.
+
+    Entries are normalized like Host header values (case-insensitive, IPv6
+    brackets stripped); wildcard forms (``*``, ``*.``) pass through apart
+    from lowercasing.
+
+    Args:
+        raw: Comma-separated env value (may be ``None`` / empty).
+
+    Returns:
+        The parsed host list, or the loopback-only default
+        (``127.0.0.1``, ``::1``, ``localhost``) when unset/blank so a local
+        HTTP/SSE MCP keeps working while DNS-rebinding hosts are rejected.
+    """
+    hosts = []
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        hosts.append(entry.lower() if entry.startswith("*") else _normalize_host(entry))
+    return hosts or list(_DEFAULT_MCP_ALLOWED_HOSTS)
+
+
+def _host_matches(host: str, pattern: str) -> bool:
+    """Return whether ``host`` matches an allow-list ``pattern``.
+
+    Mirrors Starlette's TrustedHostMiddleware semantics: ``*`` allows any host
+    and a leading ``*.`` matches the bare domain plus any subdomain.
+    """
+    if pattern == "*":
+        return True
+    if pattern.startswith("*."):
+        return host == pattern[2:] or host.endswith(pattern[1:])
+    return host == pattern
+
+
+def _origin_allowed(origin: str | None, allowed_hosts: list[str]) -> bool:
+    """Return whether a request ``Origin`` header is trusted.
+
+    A missing/blank Origin is allowed: non-browser MCP clients (curl, the
+    Python SDK) never send one, and DNS-rebinding is a browser-only attack. A
+    present Origin is trusted only when its hostname matches the allow-list.
+
+    Args:
+        origin: The raw ``Origin`` header value, or ``None`` when absent.
+        allowed_hosts: Trusted hostnames (same list used for Host validation).
+    """
+    if not origin:
+        return True
+    from urllib.parse import urlparse
+
+    host = urlparse(origin).hostname
+    if not host:
+        return False
+    return any(_host_matches(host, pattern) for pattern in allowed_hosts)
+
+
+class _HostGuardMiddleware:
+    """ASGI middleware rejecting requests with an untrusted Host header.
+
+    Same role as Starlette's TrustedHostMiddleware, but normalizes the
+    header first: Starlette's plain ``split(":")`` mangles bracketed IPv6
+    (``[::1]:8900`` → ``"["``) and matches case-sensitively, which locked
+    out ``--host ::1`` deployments and ``LOCALHOST`` clients entirely.
+    """
+
+    def __init__(self, app: Any, allowed_hosts: list[str]) -> None:
+        self.app = app
+        self.allowed_hosts = list(allowed_hosts)
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") == "http":
+            host: str | None = None
+            for key, value in scope.get("headers", []):
+                if key == b"host":
+                    host = value.decode("latin-1")
+                    break
+            normalized = _normalize_host(host) if host else ""
+            if not any(_host_matches(normalized, pattern) for pattern in self.allowed_hosts):
+                from starlette.responses import PlainTextResponse
+
+                await PlainTextResponse("Invalid host header", status_code=400)(
+                    scope, receive, send
+                )
+                return
+        await self.app(scope, receive, send)
+
+
+class _OriginGuardMiddleware:
+    """ASGI middleware rejecting untrusted cross-origin browser requests.
+
+    Complements TrustedHostMiddleware: it blocks a request whose ``Origin``
+    header names a host outside the allow-list before the MCP session handler
+    runs, returning ``403`` so a rebinding page cannot invoke MCP tools.
+    """
+
+    def __init__(self, app: Any, allowed_hosts: list[str]) -> None:
+        self.app = app
+        self.allowed_hosts = list(allowed_hosts)
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") == "http":
+            origin: str | None = None
+            for key, value in scope.get("headers", []):
+                if key == b"origin":
+                    origin = value.decode("latin-1")
+                    break
+            if not _origin_allowed(origin, self.allowed_hosts):
+                from starlette.responses import PlainTextResponse
+
+                await PlainTextResponse("Origin not allowed", status_code=403)(
+                    scope, receive, send
+                )
+                return
+        await self.app(scope, receive, send)
+
+
+def _security_middleware(allowed_hosts: list[str]) -> list[Any]:
+    """Build the Host + Origin allow-list middleware for network MCP transports.
+
+    Args:
+        allowed_hosts: Trusted hostnames from ``_parse_allowed_hosts``.
+
+    Returns:
+        A middleware list suitable for ``FastMCP.http_app(middleware=...)``.
+    """
+    from starlette.middleware import Middleware
+
+    return [
+        Middleware(_HostGuardMiddleware, allowed_hosts=allowed_hosts),
+        Middleware(_OriginGuardMiddleware, allowed_hosts=allowed_hosts),
+    ]
+
+
+def _build_network_app(transport: str, allowed_hosts: list[str]):
+    """Build a DNS-rebinding-hardened FastMCP ASGI app for a network transport.
+
+    Args:
+        transport: ``"sse"`` or ``"streamable-http"``.
+        allowed_hosts: Trusted Host/Origin hostnames.
+
+    Returns:
+        A Starlette ASGI app (with MCP lifespan) ready for ``uvicorn.run``.
+    """
+    return mcp.http_app(transport=transport, middleware=_security_middleware(allowed_hosts))
 
 
 def _get_skills_loader():
@@ -1366,6 +1586,7 @@ def get_market_data(
     - "finlab": Taiwan equities (requires FINLAB_API_TOKEN, e.g. 2330.TW)
     - "shioaji": Taiwan equities -- primary TW source (requires SJ_API_KEY/SJ_SEC_KEY, e.g. 2330.TW)
     - "shioaji_futures": Taiwan index futures TXF/MXF/TMF (requires SJ_API_KEY/SJ_SEC_KEY, e.g. TXFR1.TWF)
+    - "mt5": forex/metals from a local MetaTrader 5 terminal (Windows; e.g. EUR/USD, XAUUSD.FX)
     - "auto": auto-detect based on symbol format (with fallback)
 
     Args:
@@ -2208,44 +2429,49 @@ def main():
 
     parser = argparse.ArgumentParser(description="Vibe-Trading MCP Server")
     parser.add_argument(
-        "--transport", choices=["stdio", "http", "sse"], default="stdio",
-        help="MCP transport (default: stdio). 'http' is the current Streamable "
-             "HTTP standard (single /mcp endpoint, supports POST); 'sse' is the "
-             "older two-endpoint transport (GET /sse + POST /messages), kept "
-             "only for clients that haven't moved off it yet.",
-    )
-    parser.add_argument("--port", type=int, default=8900, help="Port (only used with --transport http/sse)")
-    parser.add_argument(
-        "--host", default="0.0.0.0",
-        help="Bind address (only used with --transport http/sse; default 0.0.0.0 -- "
-             "these transports exist for network clients, and FastMCP's own default "
-             "of 127.0.0.1 is unreachable through Docker's port mapping since that "
-             "binds only the container's internal loopback, not the bridge-network-"
-             "facing interface the port forward actually connects to)",
+        "--transport",
+        choices=["stdio", "sse", "http"],
+        default="stdio",
+        help="MCP transport (default: stdio). 'http' = Streamable HTTP (current spec default), "
+        "served at POST/GET /mcp. 'sse' = legacy deprecated SSE (GET /sse + POST /messages/).",
     )
     parser.add_argument(
-        "--allowed-hosts", default="*",
-        help="Comma-separated Host-header allowlist for --transport http/sse "
-             "(only used there). FastMCP's HostOriginGuardMiddleware rejects any "
-             "request whose Host header isn't in this list with 421 Misdirected "
-             "Request, DEFAULT_HOSTS is only 127.0.0.1/localhost/::1 -- confirmed "
-             "live (2026-07-08) that this 421s every request from a LAN/Tailscale/ "
-             "WireGuard client, since none of those match. Default '*' matches this "
-             "deployment's existing no-auth LAN/VPN-wide access posture (same as "
-             "--host 0.0.0.0 above and the frontend's port 5899); narrow it to "
-             "specific IPs/hostnames if this port is ever exposed more broadly.",
+        "--host",
+        default="127.0.0.1",
+        help="Network bind host for --transport sse / http (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=8900, help="SSE/HTTP port (default: 8900)"
+    )
+    parser.add_argument(
+        "--enable-shell-tools",
+        action="store_true",
+        help="Register the bash / background_run shell tools (arbitrary OS "
+        "command execution — RCE surface). OFF by default for every transport; "
+        "equivalent to setting VIBE_TRADING_ENABLE_SHELL_TOOLS=1.",
     )
     args = parser.parse_args()
-    _include_shell_tools = True if args.transport == "stdio" else _env_shell_tools_enabled()
+    _include_shell_tools = _resolve_include_shell_tools(args.enable_shell_tools)
     _registry = None
     _get_registry()  # pre-warm: avoids deadlock when first tools/call lazy-inits inside FastMCP worker thread
 
-    if args.transport in ("http", "sse"):
-        allowed_hosts = [h.strip() for h in args.allowed_hosts.split(",") if h.strip()]
-        mcp.run(
-            transport=args.transport, host=args.host, port=args.port,
-            allowed_hosts=allowed_hosts, allowed_origins=allowed_hosts,
+    if args.transport in ("sse", "http"):
+        # Network transports bind a TCP port and are therefore reachable by a
+        # DNS-rebinding page in the user's browser. fastmcp 3.2.4 has no
+        # built-in host/origin guard, so wrap the ASGI app with a Host + Origin
+        # allow-list (default loopback-only) and serve via uvicorn directly.
+        # 'http' = Streamable HTTP (single /mcp endpoint, MCP spec 2025-03-26+),
+        # replacing the deprecated two-endpoint SSE transport for modern clients.
+        import uvicorn
+
+        from src.config.accessor import get_env_config
+
+        allowed_hosts = _parse_allowed_hosts(
+            get_env_config().api.vibe_trading_mcp_allowed_hosts
         )
+        transport = "streamable-http" if args.transport == "http" else "sse"
+        app = _build_network_app(transport, allowed_hosts)
+        uvicorn.run(app, host=args.host, port=args.port)
     else:
         mcp.run()
 

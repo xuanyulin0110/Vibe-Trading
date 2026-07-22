@@ -37,6 +37,7 @@ class MarketDataTool(BaseTool):
                 "type": "string",
                 "enum": [
                     "auto",
+                    "longbridge",
                     "yfinance",
                     "yahoo",
                     "okx",
@@ -56,16 +57,21 @@ class MarketDataTool(BaseTool):
                     "finlab",
                     "shioaji",
                     "shioaji_futures",
+                    "mt5",
                 ],
                 "description": (
                     "Data source. 'auto' detects from symbol format with fallback. "
+                    "Use 'longbridge' explicitly for US/HK OHLCV through the "
+                    "Longbridge OpenAPI (requires Longbridge credentials). "
                     "Free, no key: yfinance/yahoo (US/HK equities), okx/ccxt "
                     "(crypto), baostock/tencent/eastmoney/sina/akshare/mootdx "
                     "(China A-shares), stooq (global EOD). Key-gated REST: tushare "
                     "(China A-shares), finnhub/alphavantage/tiingo/fmp (US/global), "
                     "shioaji (Taiwan equities, e.g. 2330.TW -- primary), finlab "
                     "(Taiwan equities -- fallback when shioaji is unavailable), "
-                    "shioaji_futures (Taiwan index futures, e.g. TXFR1.TWF)."
+                    "shioaji_futures (Taiwan index futures, e.g. TXFR1.TWF). "
+                    "mt5: forex/metals from a local MetaTrader 5 terminal (Windows; "
+                    "e.g. EUR/USD, XAUUSD.FX)."
                 ),
                 "default": "auto",
             },
@@ -82,6 +88,7 @@ class MarketDataTool(BaseTool):
         },
         "required": ["codes", "start_date", "end_date"],
     }
+    repeatable = True
 
     def execute(self, **kwargs: Any) -> str:
         return fetch_market_data_json(

@@ -73,6 +73,29 @@ class _StubLLMWithUsage:
         return _StubLLMResponse()
 
 
+class _StubLLMSuccess:
+    """LLM stub that records calls and returns a final answer."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[Any] | None = None,
+        on_text_chunk: Callable[[str], None] | None = None,
+        on_reasoning_chunk: Callable[[str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> _StubLLMResponse:
+        self.calls += 1
+        response = _StubLLMResponse()
+        response.content = "done"
+        return response
+
+    def chat(self, messages: list[dict[str, Any]], **_: Any) -> _StubLLMResponse:
+        return _StubLLMResponse()
+
+
 class _StubLLMCancelMidStream:
     """LLM stub that cancels the loop from inside the LLM call.
 
@@ -150,6 +173,24 @@ def test_cancelled_terminal_returns_reason(tmp_path: Path) -> None:
     assert result["status"] == "cancelled"
     assert result["reason"] == "cancelled by user"
     assert result["max_iterations"] == 3
+
+
+def test_cancel_before_first_run_is_not_cleared(tmp_path: Path) -> None:
+    """A cancellation accepted while queued must stop before the LLM call."""
+    llm = _StubLLMSuccess()
+    agent = _build_agent(llm, max_iter=1, tmp_run_dir=tmp_path / "run")
+
+    agent.cancel()
+    cancelled = agent.run(user_message="stale request")
+
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["reason"] == "cancelled by user"
+    assert llm.calls == 0
+
+    reused = agent.run(user_message="new request")
+
+    assert reused["status"] == "success"
+    assert llm.calls == 1
 
 
 class _StubLLMCancelWithToolCalls:

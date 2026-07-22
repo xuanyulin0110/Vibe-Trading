@@ -9,8 +9,13 @@ class RapidOcrEngine:
     """Local OCR engine using RapidOCR (PaddleOCR-derived, ONNX Runtime)."""
 
     name = "rapid"
+    is_cloud = False
+    install_hint = "pip install rapidocr_onnxruntime"
 
     def __init__(self) -> None:
+        # Lazy init: RapidOCR() loaded inside is_available() / recognize().
+        # _select_first_local() probes every registered engine, so __init__
+        # must stay cheap (attribute assignment only).
         self._engine = None
 
     def is_available(self) -> bool:
@@ -29,3 +34,9 @@ class RapidOcrEngine:
         if not result:
             return ""
         return "\n".join(item[1] for item in result)
+
+
+# Self-register to built-in engine table
+from src.tools.ocr.engine import register_builtin  # noqa: E402
+
+register_builtin("rapid", RapidOcrEngine)

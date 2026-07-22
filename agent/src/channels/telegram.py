@@ -51,6 +51,10 @@ def _split_telegram_markdown(content: str, max_len: int) -> list[str]:
     content = content.lstrip()
     if not content:
         return []
+    # Non-positive max_len cannot advance the cut pointer; return unsplit
+    # (same policy as split_message).
+    if max_len <= 0:
+        return [content]
     if len(content) <= max_len:
         return [content]
 
@@ -90,26 +94,38 @@ def _split_telegram_markdown(content: str, max_len: int) -> list[str]:
                 min_code_pos = len(fence)
                 if content.startswith(fence + "\n"):
                     min_code_pos += 1
-                if pos < min_code_pos and min_code_pos + len(closing) > max_len:
-                    chunks.append(content[:max_len])
-                    content = content[max_len:].lstrip()
-                    continue
+                # Fence-line-only cuts never consume body; force past the header.
+                if pos <= min_code_pos:
+                    pos = max_len
                 if pos + len(closing) > max_len:
                     budget = max_len - len(closing)
-                    if budget > 0:
+                    if budget > min_code_pos:
                         recut = content[:budget]
                         adjusted = recut.rfind("\n")
-                        if adjusted <= 0:
+                        if adjusted <= min_code_pos:
                             adjusted = recut.rfind(" ")
-                        pos = adjusted if adjusted > 0 else budget
+                        pos = adjusted if adjusted > min_code_pos else budget
+                    elif budget > 0:
+                        chunks.append(content[:max_len])
+                        content = content[max_len:].lstrip()
+                        continue
                     else:
                         closing = "```"
                         pos = max_len - len(closing)
+                if pos <= min_code_pos:
+                    chunks.append(content[:max_len])
+                    content = content[max_len:].lstrip()
+                    continue
                 chunks.append(content[:pos] + closing)
                 remainder = content[pos:]
                 if remainder.startswith("\n"):
                     remainder = remainder[1:]
-                content = f"{fence}\n{remainder}"
+                nxt = f"{fence}\n{remainder}"
+                if nxt == content or len(nxt) >= len(content):
+                    chunks.append(content[:max_len])
+                    content = content[max_len:].lstrip()
+                    continue
+                content = nxt
                 continue
 
         chunks.append(content[:pos])

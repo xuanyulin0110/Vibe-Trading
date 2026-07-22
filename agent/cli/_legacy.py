@@ -403,6 +403,8 @@ def _provider_key_env(provider: str | None) -> str | None:
         "requesty": "REQUESTY_API_KEY",
         "openai": "OPENAI_API_KEY",
         "deepseek": "DEEPSEEK_API_KEY",
+        "nvidia": "NVIDIA_API_KEY",
+        "nvidia-nim": "NVIDIA_API_KEY",
         "gemini": "GEMINI_API_KEY",
         "groq": "GROQ_API_KEY",
         "dashscope": "DASHSCOPE_API_KEY",
@@ -411,6 +413,8 @@ def _provider_key_env(provider: str | None) -> str | None:
         "moonshot": "MOONSHOT_API_KEY",
         "minimax": "MINIMAX_API_KEY",
         "mimo": "MIMO_API_KEY",
+        "spark": "SPARK_API_KEY",
+        "iflytek": "SPARK_API_KEY",
         "zai": "ZAI_API_KEY",
     }.get((provider or "").lower())
 
@@ -423,6 +427,8 @@ def _provider_base_env(provider: str | None) -> str | None:
         "openai": "OPENAI_BASE_URL",
         "openai-codex": "OPENAI_CODEX_BASE_URL",
         "deepseek": "DEEPSEEK_BASE_URL",
+        "nvidia": "NVIDIA_BASE_URL",
+        "nvidia-nim": "NVIDIA_BASE_URL",
         "gemini": "GEMINI_BASE_URL",
         "groq": "GROQ_BASE_URL",
         "dashscope": "DASHSCOPE_BASE_URL",
@@ -431,6 +437,8 @@ def _provider_base_env(provider: str | None) -> str | None:
         "moonshot": "MOONSHOT_BASE_URL",
         "minimax": "MINIMAX_BASE_URL",
         "mimo": "MIMO_BASE_URL",
+        "spark": "SPARK_BASE_URL",
+        "iflytek": "SPARK_BASE_URL",
         "zai": "ZAI_BASE_URL",
         "ollama": "OLLAMA_BASE_URL",
     }.get((provider or "").lower())
@@ -1440,12 +1448,11 @@ def cmd_run(prompt: str, max_iter: int, *, json_mode: bool = False, no_rich: boo
     return _result_exit_code(result)
 
 
-def _build_history_from_trace(run_dir: Path) -> List[Dict[str, str]]:
+def _build_history_from_trace(trace_dir: Path) -> List[Dict[str, str]]:
     """Build conversation history from trace.jsonl."""
     from src.agent.trace import TraceWriter
 
-    trace_dir = TraceWriter.find_trace_dir(run_dir.name, runs_dir=RUNS_DIR, sessions_dir=SESSIONS_DIR)
-    if trace_dir is None:
+    if not (trace_dir / "trace.jsonl").exists():
         return []
     entries = TraceWriter.read(
         trace_dir,
@@ -1470,6 +1477,8 @@ def cmd_continue(
     no_rich: bool = False,
 ) -> int:
     """Continue an existing run."""
+    from src.agent.trace import TraceWriter
+
     run_dir = RUNS_DIR / run_id
     session_trace_dir = SESSIONS_DIR / run_id
     if not run_dir.exists() and not session_trace_dir.exists():
@@ -1478,10 +1487,17 @@ def cmd_continue(
             return EXIT_USAGE_ERROR
         console.print(f"[red]Run {run_id} not found[/red]")
         return EXIT_USAGE_ERROR
-    if not run_dir.exists():
-        run_dir.mkdir(parents=True, exist_ok=True)
+    trace_dir = TraceWriter.find_trace_dir(
+        run_id, runs_dir=RUNS_DIR, sessions_dir=SESSIONS_DIR
+    )
+    if trace_dir is None:
+        # Preserve support for an existing, empty run/session directory. Once a
+        # trace exists, ``find_trace_dir`` is authoritative so every later
+        # continuation reads and appends to the same conversation.
+        trace_dir = session_trace_dir if session_trace_dir.exists() else run_dir
+    trace_dir.mkdir(parents=True, exist_ok=True)
 
-    history = _build_history_from_trace(run_dir)
+    history = _build_history_from_trace(trace_dir)
     if not json_mode and no_rich:
         print(f"Continue {run_id}: {prompt[:120]}\n")
     if json_mode or no_rich:
@@ -1490,7 +1506,7 @@ def cmd_continue(
             result = _run_agent(
                 prompt,
                 history=history,
-                run_dir_override=str(run_dir),
+                run_dir_override=str(trace_dir),
                 max_iter=max_iter,
                 no_rich=no_rich,
                 stream_output=not json_mode,
@@ -1498,7 +1514,12 @@ def cmd_continue(
         except KeyboardInterrupt:
             if json_mode:
                 _print_json_result(
-                    {"status": "cancelled", "run_id": run_id, "run_dir": str(run_dir), "reason": "Interrupted"}
+                    {
+                        "status": "cancelled",
+                        "run_id": run_id,
+                        "run_dir": str(trace_dir),
+                        "reason": "Interrupted",
+                    }
                 )
             else:
                 print("\nInterrupted")
@@ -1518,7 +1539,7 @@ def cmd_continue(
             result = _run_agent(
                 prompt,
                 history=history,
-                run_dir_override=str(run_dir),
+                run_dir_override=str(trace_dir),
                 max_iter=max_iter,
                 dashboard=dashboard,
             )
@@ -2835,7 +2856,9 @@ def _api_auth_headers() -> Dict[str, str]:
     return {"Authorization": f"Bearer {key}"} if key else {}
 
 
-def _live_api_call(method: str, path: str, *, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _live_api_call(
+    method: str, path: str, *, body: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """Call an R6 live-runner endpoint and decode the JSON response.
 
     Args:
@@ -2852,11 +2875,12 @@ def _live_api_call(method: str, path: str, *, body: Optional[Dict[str, Any]] = N
     import httpx
 
     url = f"{_live_api_base()}{path}"
+    headers = _api_auth_headers()
     try:
         if method.upper() == "GET":
-            response = httpx.get(url, timeout=30.0)
+            response = httpx.get(url, headers=headers, timeout=30.0)
         else:
-            response = httpx.post(url, json=body or {}, timeout=30.0)
+            response = httpx.post(url, json=body or {}, headers=headers, timeout=30.0)
         response.raise_for_status()
         return response.json()
     except Exception as exc:  # noqa: BLE001 — surface a clean error to the user
@@ -2943,31 +2967,35 @@ def cmd_channels_status(*, json_mode: bool = False, local: bool = False) -> int:
 def cmd_channels_start(*, json_mode: bool = False) -> int:
     """Start configured IM channels through the API runtime."""
     payload = _channels_api_call("POST", "/channels/start")
+    failed = payload.get("status") == "error"
     if json_mode:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-    elif payload.get("status") == "error":
+    elif failed:
         console.print(f"[red]Failed to start IM channels:[/red] {payload.get('error')}")
-        console.print("[dim]Run `vibe-trading serve --port 8000` first, or set VIBE_TRADING_API_URL.[/dim]")
-        return EXIT_RUN_FAILED
+        console.print(
+            "[dim]Run `vibe-trading serve --port 8000` first, or set VIBE_TRADING_API_URL.[/dim]"
+        )
     else:
         console.print("[green]IM channels started.[/green]")
         _print_channels_status(payload)
-    return EXIT_SUCCESS
+    return EXIT_RUN_FAILED if failed else EXIT_SUCCESS
 
 
 def cmd_channels_stop(*, json_mode: bool = False) -> int:
     """Stop configured IM channels through the API runtime."""
     payload = _channels_api_call("POST", "/channels/stop")
+    failed = payload.get("status") == "error"
     if json_mode:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-    elif payload.get("status") == "error":
+    elif failed:
         console.print(f"[red]Failed to stop IM channels:[/red] {payload.get('error')}")
-        console.print("[dim]Run `vibe-trading serve --port 8000` first, or set VIBE_TRADING_API_URL.[/dim]")
-        return EXIT_RUN_FAILED
+        console.print(
+            "[dim]Run `vibe-trading serve --port 8000` first, or set VIBE_TRADING_API_URL.[/dim]"
+        )
     else:
         console.print("[green]IM channels stopped.[/green]")
         _print_channels_status(payload)
-    return EXIT_SUCCESS
+    return EXIT_RUN_FAILED if failed else EXIT_SUCCESS
 
 
 def cmd_channels_pairing(channel: str, command: str) -> int:
@@ -3901,13 +3929,131 @@ def cmd_connector_check(
     return EXIT_SUCCESS
 
 
+def _first_present(row: dict[str, Any], *keys: str) -> Any:
+    """Return the first key whose value is not None (0/'' are kept), else None.
+
+    Connectors expose different result schemas (IBKR-style ``position``/``avg_cost``
+    vs Longbridge-style ``quantity``/``cost_price``); the shared CLI renderers use
+    this to read whichever key a given connector emitted without dropping a real
+    zero quantity via a falsy ``or`` chain.
+    """
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _print_connector_balances(result: dict[str, Any]) -> int:
+    """Render the multi-currency balances table returned by ``broker_sdk`` connectors."""
+    cell = lambda v: "" if v is None else str(v)  # noqa: E731
+    table = Table(title=f"Account Balances · {result.get('profile_id')}", box=box.SIMPLE_HEAVY, show_lines=False)
+    table.add_column("Currency")
+    table.add_column("Net Assets", justify="right")
+    table.add_column("Total Cash", justify="right")
+    table.add_column("Buy Power", justify="right")
+    table.add_column("Init Margin", justify="right")
+    table.add_column("Maint Margin", justify="right")
+    for row in result.get("balances", []):
+        table.add_row(
+            cell(row.get("currency")),
+            cell(row.get("net_assets")),
+            cell(row.get("total_cash")),
+            cell(row.get("buy_power")),
+            cell(row.get("init_margin")),
+            cell(row.get("maintenance_margin")),
+        )
+    console.print(table)
+    return EXIT_SUCCESS
+
+
+def _normalize_mcp_value(value: Any) -> Any:
+    """Unwrap a value from a remote MCP call into plain JSON-safe data.
+
+    Remote connectors (e.g. Robinhood) return their payload as an instance of
+    ``fastmcp``'s auto-generated ``Root`` type — a *dataclass* built at runtime
+    via ``dataclasses.make_dataclass`` from the tool's JSON Schema, not a
+    Pydantic model. ``dataclasses.asdict()`` is the correct unwrap (it also
+    recurses into nested dataclass fields, e.g. ``buying_power``); a stray
+    Pydantic model elsewhere falls back to ``model_dump()``. Anything else
+    (already a dict/list/scalar) is returned as-is.
+    """
+    import dataclasses
+
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    return value
+
+
+def _flatten_account_fields(data: dict[str, Any], prefix: str = "") -> list[tuple[str, str]]:
+    """Flatten a remote-MCP account payload into (tag, value) rows.
+
+    Nested one level (e.g. ``buying_power.buying_power``) rather than
+    recursing arbitrarily deep, since broker account payloads are shallow.
+    Skips ``None`` and zero-valued numeric-looking fields, matching the
+    guidance the broker's own response typically includes (zero means no
+    holdings in that asset class — noise to omit, not a real 0.00 balance).
+    """
+    rows: list[tuple[str, str]] = []
+    for key, value in data.items():
+        if key == "currency" or value is None:
+            continue
+        label = f"{prefix}{key}"
+        normalized = _normalize_mcp_value(value)
+        if isinstance(normalized, dict):
+            rows.extend(_flatten_account_fields(normalized, prefix=f"{label}."))
+            continue
+        text = str(normalized)
+        try:
+            if float(text) == 0.0:
+                continue
+        except (TypeError, ValueError):
+            pass
+        rows.append((label, text))
+    return rows
+
+
 def _print_connector_account(result: dict[str, Any]) -> int:
     accounts = ", ".join(result.get("accounts", [])) or "(none)"
-    console.print(f"Accounts: [cyan]{rich_escape(accounts)}[/cyan]")
     rows = result.get("summary", [])
+    # broker_sdk connectors (Longbridge, …) return a ``balances`` list instead of
+    # IBKR-style ``summary`` tag/value rows; render that when present (#735).
+    if not rows and result.get("balances"):
+        return _print_connector_balances(result)
     if not rows:
+        # Not the broker_sdk flat shape — try the remote-MCP nested shape.
+        # Robinhood's tool result double-wraps: result["data"] unwraps to
+        # {"data": <actual account fields>, "guide": "<advisory text>"},
+        # not the fields directly — drill one more level in when present.
+        wrapper = _normalize_mcp_value(result.get("data"))
+        raw_data = wrapper
+        guide = result.get("guide")
+        if isinstance(wrapper, dict) and "data" in wrapper and "guide" in wrapper:
+            raw_data = _normalize_mcp_value(wrapper.get("data"))
+            guide = wrapper.get("guide") or guide
+        if isinstance(raw_data, dict):
+            currency = raw_data.get("currency", "")
+            account_label = result.get("account_number") or accounts
+            table = Table(
+                title=f"Account Summary · {result.get('profile_id')}", box=box.SIMPLE_HEAVY, show_lines=False
+            )
+            table.add_column("Field")
+            table.add_column("Value", justify="right")
+            for tag, value in _flatten_account_fields(raw_data):
+                is_currency_code = tag.endswith("currency") or tag.endswith("_currency")
+                display = value if is_currency_code else f"{value} {currency}".strip()
+                table.add_row(tag, display)
+            console.print(f"Account: [cyan]{rich_escape(str(account_label))}[/cyan]")
+            console.print(table)
+            if guide:
+                console.print(f"[dim]{rich_escape(str(guide))}[/dim]")
+            return EXIT_SUCCESS
+        console.print(f"Accounts: [cyan]{rich_escape(accounts)}[/cyan]")
         console.print("[dim]No account summary returned.[/dim]")
         return EXIT_SUCCESS
+    console.print(f"Accounts: [cyan]{rich_escape(accounts)}[/cyan]")
     table = Table(title=f"Account Summary · {result.get('profile_id')}", box=box.SIMPLE_HEAVY, show_lines=False)
     table.add_column("Account")
     table.add_column("Tag")
@@ -3922,7 +4068,6 @@ def _print_connector_account(result: dict[str, Any]) -> int:
         )
     console.print(table)
     return EXIT_SUCCESS
-
 
 def cmd_connector_account(
     profile_id: Optional[str] = None,
@@ -3967,6 +4112,41 @@ def cmd_connector_positions(
         return EXIT_RUN_FAILED
     rows = result.get("positions", [])
     if not rows:
+        # Not the broker_sdk flat shape — try the remote-MCP nested shape
+        # (same double-wrap as account: result["data"] -> {"data": {"positions":
+        # [...], "next": ...}, "guide": "..."}).
+        wrapper = _normalize_mcp_value(result.get("data"))
+        inner = wrapper
+        guide = result.get("guide")
+        if isinstance(wrapper, dict) and "data" in wrapper and "guide" in wrapper:
+            inner = _normalize_mcp_value(wrapper.get("data"))
+            guide = wrapper.get("guide") or guide
+        remote_positions = inner.get("positions") if isinstance(inner, dict) else None
+        if remote_positions:
+            account_label = result.get("account_number") or "(none)"
+            table = Table(title=f"Positions · {result.get('profile_id')}", box=box.SIMPLE_HEAVY, show_lines=False)
+            table.add_column("Symbol")
+            table.add_column("Type")
+            table.add_column("Qty", justify="right")
+            table.add_column("Avail. Sell", justify="right")
+            table.add_column("Avg Buy Price", justify="right")
+            for pos in remote_positions:
+                pos = _normalize_mcp_value(pos)
+                table.add_row(
+                    str(pos.get("symbol") or pos.get("local_symbol") or ""),
+                    str(pos.get("type") or pos.get("sec_type") or ""),
+                    str(pos.get("quantity") or pos.get("position") or ""),
+                    str(pos.get("shares_available_for_sells") or ""),
+                    str(pos.get("average_buy_price") or pos.get("avg_cost") or ""),
+                )
+            console.print(f"Account: [cyan]{rich_escape(str(account_label))}[/cyan]")
+            console.print(table)
+            if guide:
+                console.print(f"[dim]{rich_escape(str(guide))}[/dim]")
+            next_cursor = inner.get("next") if isinstance(inner, dict) else None
+            if next_cursor:
+                console.print(f"[dim]More results available (next={rich_escape(str(next_cursor))}).[/dim]")
+            return EXIT_SUCCESS
         console.print("[dim]No positions returned.[/dim]")
         return EXIT_SUCCESS
     table = Table(title=f"Positions · {result.get('profile_id')}", box=box.SIMPLE_HEAVY, show_lines=False)
@@ -3977,17 +4157,20 @@ def cmd_connector_positions(
     table.add_column("Avg Cost", justify="right")
     table.add_column("Currency")
     for row in rows:
+        # Tolerate both IBKR-style and broker_sdk (Longbridge, …) schemas (#735):
+        # position→quantity, avg_cost→cost_price, sec_type→market.
+        qty = _first_present(row, "position", "quantity")
+        avg_cost = _first_present(row, "avg_cost", "cost_price")
         table.add_row(
             str(row.get("account") or ""),
             str(row.get("local_symbol") or row.get("symbol") or ""),
-            str(row.get("sec_type") or ""),
-            str(row.get("position") or ""),
-            str(row.get("avg_cost") or ""),
+            str(row.get("sec_type") or row.get("market") or ""),
+            "" if qty is None else str(qty),
+            "" if avg_cost is None else str(avg_cost),
             str(row.get("currency") or ""),
         )
     console.print(table)
     return EXIT_SUCCESS
-
 
 def cmd_connector_orders(
     profile_id: Optional[str] = None,
@@ -4659,6 +4842,36 @@ _PROVIDER_CHOICES: list[dict[str, str | None]] = [
         "key_placeholder": "sk-...",
     },
     {
+        "label": "SiliconFlow (CN)",
+        "provider": "siliconflow-cn",
+        "key_env": "SILICONFLOW_API_KEY",
+        "base_env": "SILICONFLOW_BASE_URL",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "model": "deepseek-ai/DeepSeek-V3.1-Terminus",
+        "key_prefix": "sk-",
+        "key_placeholder": "sk-...",
+    },
+    {
+        "label": "SiliconFlow (Global)",
+        "provider": "siliconflow-global",
+        "key_env": "SILICONFLOW_GLOBAL_API_KEY",
+        "base_env": "SILICONFLOW_GLOBAL_BASE_URL",
+        "base_url": "https://api.siliconflow.com/v1",
+        "model": "deepseek-ai/DeepSeek-V3.1-Terminus",
+        "key_prefix": "sk-",
+        "key_placeholder": "sk-...",
+    },
+    {
+        "label": "NVIDIA NIM",
+        "provider": "nvidia",
+        "key_env": "NVIDIA_API_KEY",
+        "base_env": "NVIDIA_BASE_URL",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "model": "nvidia/nemotron-3-ultra-550b-a55b",
+        "key_prefix": "nvapi-",
+        "key_placeholder": "nvapi-...",
+    },
+    {
         "label": "OpenAI",
         "provider": "openai",
         "key_env": "OPENAI_API_KEY",
@@ -4739,6 +4952,16 @@ _PROVIDER_CHOICES: list[dict[str, str | None]] = [
         "key_placeholder": "api-key...",
     },
     {
+        "label": "iFlytek Spark",
+        "provider": "spark",
+        "key_env": "SPARK_API_KEY",
+        "base_env": "SPARK_BASE_URL",
+        "base_url": "https://spark-api-open.xf-yun.com/v1",
+        "model": "4.0Ultra",
+        "key_prefix": None,
+        "key_placeholder": "api-password...",
+    },
+    {
         "label": "Z.ai (Coding platform)",
         "provider": "zai",
         "key_env": "ZAI_API_KEY",
@@ -4789,6 +5012,8 @@ def _render_env_content(config: dict[str, str]) -> str:
         "REQUESTY_BASE_URL",
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_BASE_URL",
+        "NVIDIA_API_KEY",
+        "NVIDIA_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "OPENAI_CODEX_BASE_URL",
@@ -4806,6 +5031,8 @@ def _render_env_content(config: dict[str, str]) -> str:
         "MINIMAX_BASE_URL",
         "MIMO_API_KEY",
         "MIMO_BASE_URL",
+        "SPARK_API_KEY",
+        "SPARK_BASE_URL",
         "ZAI_API_KEY",
         "ZAI_BASE_URL",
         "OLLAMA_BASE_URL",
@@ -5300,9 +5527,8 @@ def cmd_dev(
     )
     console.print("[dim]Press Ctrl+C to stop both servers.[/dim]\n")
 
-    backend = subprocess.Popen(backend_cmd, cwd=str(AGENT_DIR))
-    frontend = subprocess.Popen(frontend_cmd, cwd=str(frontend_dir))
-    children = [backend, frontend]
+    children: List[subprocess.Popen] = []
+    exit_code = EXIT_SUCCESS
 
     def _terminate_all() -> None:
         for child in children:
@@ -5312,28 +5538,41 @@ def cmd_dev(
                 except OSError:
                     pass
 
-    # Wire signal handlers. On Windows, SIGTERM does not exist and signal
-    # handlers must be installed from the main thread; KeyboardInterrupt is
-    # the cross-platform path for Ctrl+C.
-    if threading.current_thread() is threading.main_thread():
-        try:
-            signal.signal(signal.SIGINT, lambda *_: _terminate_all())
-        except (ValueError, OSError):
-            pass
-        try:
-            signal.signal(signal.SIGTERM, lambda *_: _terminate_all())
-        except (AttributeError, ValueError, OSError):
-            pass
-
     try:
+        backend = subprocess.Popen(backend_cmd, cwd=str(AGENT_DIR))
+        children.append(backend)
+        frontend = subprocess.Popen(frontend_cmd, cwd=str(frontend_dir))
+        children.append(frontend)
+
+        # Wire signal handlers only after both children are tracked. On
+        # Windows, SIGTERM may not exist and handlers must be installed from
+        # the main thread; KeyboardInterrupt remains the portable Ctrl+C path.
+        if threading.current_thread() is threading.main_thread():
+            try:
+                signal.signal(signal.SIGINT, lambda *_: _terminate_all())
+            except (ValueError, OSError):
+                pass
+            try:
+                signal.signal(signal.SIGTERM, lambda *_: _terminate_all())
+            except (AttributeError, ValueError, OSError):
+                pass
+
         # Wait for whichever process exits first; if it's the backend we
         # bring the frontend down too, and vice versa.
         while True:
             time.sleep(0.5)
-            if backend.poll() is not None or frontend.poll() is not None:
+            return_codes = [backend.poll(), frontend.poll()]
+            if any(code is not None for code in return_codes):
+                exit_code = next(
+                    (code for code in return_codes if code not in (None, EXIT_SUCCESS)),
+                    EXIT_SUCCESS,
+                )
                 break
     except KeyboardInterrupt:
         pass
+    except OSError as exc:
+        console.print(f"[red]Failed to start development server:[/red] {exc}")
+        exit_code = EXIT_RUN_FAILED
     finally:
         _terminate_all()
         # Give the children a brief grace period, then force-kill.
@@ -5347,8 +5586,12 @@ def cmd_dev(
                     child.kill()
                 except OSError:
                     pass
+                try:
+                    child.wait(timeout=1.0)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
 
-    return EXIT_SUCCESS
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:

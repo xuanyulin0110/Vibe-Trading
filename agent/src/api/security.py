@@ -375,23 +375,29 @@ def _validate_api_auth(
     query_api_key: Optional[str] = None,
     allow_query: bool = False,
 ) -> None:
-    """Validate configured auth, preserving loopback-only dev mode."""
+    """Validate configured auth, preserving loopback-only dev mode.
+
+    Key-first precedence: when an API key is configured every peer -- including
+    loopback -- must present a valid credential (GHSA-7wgj). Only when no key is
+    configured does the loopback dev-trust apply. Mirrors
+    :func:`require_settings_write_auth`.
+    """
     if request.method.upper() not in _SAFE_BROWSER_METHODS:
         _reject_cross_site_browser_request(request)
 
-    if _is_local_client(request):
+    api_key = _configured_api_key()
+    if api_key:
+        token = _auth_credential_from_header_or_query(cred, query_api_key, allow_query=allow_query)
+        if not token or not hmac.compare_digest(token, api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
         return
 
-    api_key = _configured_api_key()
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="API_AUTH_KEY is required for non-local API access",
-        )
-
-    token = _auth_credential_from_header_or_query(cred, query_api_key, allow_query=allow_query)
-    if not token or not hmac.compare_digest(token, api_key):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    if _is_local_client(request):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="API_AUTH_KEY is required for non-local API access",
+    )
 
 
 def _is_local_client(request: Request) -> bool:
@@ -483,24 +489,21 @@ async def require_event_stream_auth(
     if request.method.upper() not in _SAFE_BROWSER_METHODS:
         _reject_cross_site_browser_request(request)
 
+    api_key = _configured_api_key()
+    if api_key:
+        token = cred.credentials if (cred and cred.credentials) else ""
+        if token and hmac.compare_digest(token, api_key):
+            return
+        if ticket and _consume_sse_ticket(ticket):
+            return
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
     if _is_local_client(request):
         return
-
-    api_key = _configured_api_key()
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="API_AUTH_KEY is required for non-local API access",
-        )
-
-    token = cred.credentials if (cred and cred.credentials) else ""
-    if token and hmac.compare_digest(token, api_key):
-        return
-
-    if ticket and _consume_sse_ticket(ticket):
-        return
-
-    raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="API_AUTH_KEY is required for non-local API access",
+    )
 
 
 async def require_local_or_auth(

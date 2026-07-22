@@ -23,4 +23,8 @@ describe("Vite API proxy config", () => {
     expect(config).toContain("changeOrigin: false");
     expect(config).not.toContain("changeOrigin: true");
   });
+
+  it("proxies authentication endpoints", () => {
+    expect(config).toContain('"/auth"');
+  });
 });

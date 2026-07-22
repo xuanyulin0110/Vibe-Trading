@@ -24,8 +24,31 @@ _A_SHARE_EXCHANGE_MAP = {
     ("4", "8"): ".BJ",
 }
 
-_BUY_TOKENS = {"buy", "b", "买入", "证券买入", "融资买入", "做多", "long"}
-_SELL_TOKENS = {"sell", "s", "卖出", "证券卖出", "融券卖出", "做空", "short"}
+_BUY_TOKENS = {
+    "buy",
+    "b",
+    "purchase",
+    "buy to cover",
+    "buy-to-cover",
+    "buy_to_cover",
+    "买入",
+    "证券买入",
+    "融资买入",
+    "做多",
+    "long",
+}
+_SELL_TOKENS = {
+    "sell",
+    "s",
+    "sell short",
+    "sell-short",
+    "sell_short",
+    "卖出",
+    "证券卖出",
+    "融券卖出",
+    "做空",
+    "short",
+}
 
 
 @dataclass(frozen=True)
@@ -122,16 +145,48 @@ def detect_format(df: pd.DataFrame) -> FormatName:
 # ---------------- Parsers ----------------
 
 def _normalize_side(raw: Any) -> str:
-    """Return 'buy'/'sell', falling back to 'buy'."""
+    """Return ``buy`` or ``sell`` for an exact supported direction alias.
+
+    Raises:
+        ValueError: Direction is missing or unsupported.
+    """
+    if raw is None or pd.isna(raw):
+        raise ValueError("Trade side is required")
     s = str(raw).strip().lower()
-    if s in _SELL_TOKENS or any(tok in s for tok in _SELL_TOKENS):
+    if not s:
+        raise ValueError("Trade side is required")
+    if s in _BUY_TOKENS:
+        return "buy"
+    if s in _SELL_TOKENS:
         return "sell"
-    return "buy"
+    raise ValueError(f"Unsupported trade side: {raw!r}")
+
+
+def _is_empty_code(raw: Any) -> bool:
+    """True for None/NaN/blank securities codes from CSV/Excel cells."""
+    if raw is None:
+        return True
+    try:
+        if pd.isna(raw):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return not str(raw).strip()
 
 
 def _qualify_a_share(code: str) -> str:
     """Append .SH/.SZ/.BJ suffix to a bare A-share ticker."""
-    code = str(code).strip().zfill(6)
+    if _is_empty_code(code):
+        raise ValueError("empty securities code")
+    code = str(code).strip()
+    # Excel/CSV numeric cells stringify as "600519.0"/sci — not exchange suffixes.
+    try:
+        as_float = float(code)
+        if as_float.is_integer() and abs(as_float) < 10_000_000:
+            code = str(int(as_float))
+    except (ValueError, OverflowError):
+        pass
+    code = code.zfill(6)
     if "." in code:
         return code.upper()
     first = code[0]
@@ -160,13 +215,16 @@ def parse_tonghuashun(df: pd.DataFrame) -> list[TradeRecord]:
     """
     records: list[TradeRecord] = []
     for _, row in df.iterrows():
+        raw_code = row.get("证券代码", "")
+        if _is_empty_code(raw_code):
+            continue
         qty = _to_float(row.get("成交数量"))
         price = _to_float(row.get("成交价格"))
         amount = _to_float(row.get("成交金额")) or qty * price
         fee = _to_float(row.get("手续费")) + _to_float(row.get("印花税")) + _to_float(row.get("过户费"))
         records.append(TradeRecord(
             datetime=str(row.get("成交时间", "")).strip(),
-            symbol=_qualify_a_share(row.get("证券代码", "")),
+            symbol=_qualify_a_share(raw_code),
             name=str(row.get("证券名称", "")).strip(),
             side=_normalize_side(row.get("操作")),
             quantity=qty,
@@ -186,6 +244,9 @@ def parse_eastmoney(df: pd.DataFrame) -> list[TradeRecord]:
     """
     records: list[TradeRecord] = []
     for _, row in df.iterrows():
+        raw_code = row.get("股票代码", "")
+        if _is_empty_code(raw_code):
+            continue
         raw_date = str(row.get("成交日期", "")).strip()
         raw_time = str(row.get("成交时间", "")).strip()
         if len(raw_date) == 8 and raw_date.isdigit():
@@ -199,7 +260,7 @@ def parse_eastmoney(df: pd.DataFrame) -> list[TradeRecord]:
         fee = _to_float(row.get("佣金")) + _to_float(row.get("印花税"))
         records.append(TradeRecord(
             datetime=dt,
-            symbol=_qualify_a_share(row.get("股票代码", "")),
+            symbol=_qualify_a_share(raw_code),
             name=str(row.get("股票名称", "")).strip(),
             side=_normalize_side(row.get("买卖标志")),
             quantity=qty,
@@ -231,10 +292,13 @@ def parse_futu(df: pd.DataFrame) -> list[TradeRecord]:
     """
     records: list[TradeRecord] = []
     for _, row in df.iterrows():
+        raw_symbol = row.get("Symbol", "")
+        if _is_empty_code(raw_symbol):
+            continue
         date = str(row.get("Date", "")).strip()
         time = str(row.get("Time", "")).strip()
         dt = f"{date} {time}".strip()
-        symbol = str(row.get("Symbol", "")).strip().upper()
+        symbol = str(raw_symbol).strip().upper()
         qty = _to_float(row.get("Quantity"))
         price = _to_float(row.get("Price"))
         amount = _to_float(row.get("Amount")) or qty * price
@@ -281,8 +345,15 @@ def parse_generic(df: pd.DataFrame) -> list[TradeRecord]:
     amount_col = pick("amount", "value", "notional")
     fee_col = pick("fee", "commission", "fees")
 
+    if side_col is None:
+        raise ValueError(
+            "Generic trade journal requires a side, direction, or action column"
+        )
+
     records: list[TradeRecord] = []
     for _, row in df.iterrows():
+        if sym_col and _is_empty_code(row.get(sym_col)):
+            continue
         if dt_col:
             dt = str(row.get(dt_col, "")).strip()
         elif date_col:
@@ -299,7 +370,7 @@ def parse_generic(df: pd.DataFrame) -> list[TradeRecord]:
             datetime=dt,
             symbol=symbol.upper(),
             name=str(row.get(name_col, "")).strip() if name_col else "",
-            side=_normalize_side(row.get(side_col) if side_col else "buy"),
+            side=_normalize_side(row.get(side_col)),
             quantity=qty,
             price=price,
             amount=amount or qty * price,

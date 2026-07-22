@@ -1218,22 +1218,17 @@ export function Agent() {
             );
           })}
 
-          {/* Pre-stream placeholder: visible after Send, before first SSE event */}
-          {status === "streaming" && !reasoningActive && !streamingText && toolCalls.length === 0 && !messages.some((m) => m.type === "swarm_status" && m.swarmStatus?.status === "running") && (
-            <div className="flex gap-3">
-              <AgentAvatar />
-              <div className="flex-1 min-w-0 flex items-center gap-2 text-xs text-muted-foreground pt-1">
-                <Loader2 className="h-3 w-3 animate-spin text-primary shrink-0" />
-                <span>{t('agent.agentWorking')}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Live streaming area: text + tool status */}
-          {(streamingText || reasoningActive || (status === "streaming" && toolCalls.length > 0)) && (
+          {/* Streaming area - single stable wrapper to prevent insertBefore DOM race */}
+          {status === "streaming" && (
             <div className="flex gap-3">
               <AgentAvatar />
               <div className="flex-1 min-w-0 space-y-1.5">
+                {!reasoningActive && !streamingText && toolCalls.length === 0 && !messages.some((m) => m.type === "swarm_status" && m.swarmStatus?.status === "running") && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1">
+                    <Loader2 className="h-3 w-3 animate-spin text-primary shrink-0" />
+                    <span>{t('agent.agentWorking')}</span>
+                  </div>
+                )}
                 {reasoningActive && !streamingText && (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Loader2 className="h-3 w-3 animate-spin text-primary shrink-0" />
@@ -1246,7 +1241,7 @@ export function Agent() {
                     <span className="inline-block w-0.5 h-4 bg-primary ml-0.5 animate-pulse align-middle" />
                   </div>
                 )}
-                {status === "streaming" && toolCalls.length > 0 && (
+                {toolCalls.length > 0 && (
                   <ToolProgressIndicator toolCalls={toolCalls} />
                 )}
               </div>

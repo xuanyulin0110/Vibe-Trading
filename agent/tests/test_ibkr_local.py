@@ -231,3 +231,117 @@ def test_cli_connector_check_passes_account_to_backend() -> None:
         client_id=None,
         account="DU12345",
     )
+
+# -- _wait_for_tick timing regression tests ------------------------------
+
+def test_quote_waits_for_delayed_tick_arrival(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_quote polls with ib.sleep() until the ticker receives real data."""
+    import math
+    from types import SimpleNamespace
+
+    pump_count = [0]
+
+    ticker_ns = SimpleNamespace(bid=None, ask=None, last=None, close=None, volume=None, time="")
+
+    class _DelayedFillIB(_FakeIB):
+        def reqMktData(self, contract, genericTickList, snapshot, regulatorySnapshot):
+            # Reset fields each call so tests are independent.
+            ticker_ns.bid = None
+            ticker_ns.ask = None
+            ticker_ns.last = None
+            return ticker_ns
+
+        def sleep(self, seconds):
+            pump_count[0] += 1
+            # After 5 pump cycles (0.5s), populate the ticker with real data.
+            if pump_count[0] >= 5:
+                ticker_ns.bid = 150.25
+                ticker_ns.ask = 150.50
+                ticker_ns.last = 150.30
+
+    module = types.ModuleType("ib_async")
+    module.IB = _DelayedFillIB
+    module.Stock = _FakeStock
+    module.Contract = _FakeContract
+    monkeypatch.setitem(sys.modules, "ib_async", module)
+    monkeypatch.setattr(local, "tcp_port_open", lambda *_, **__: True)
+    monkeypatch.setattr(local._pool._local, "refcount", 0)
+    monkeypatch.setattr(local._pool._local, "ib", None)
+
+    result = local.get_quote("AAPL", config=local.IBKRLocalConfig(profile="paper"))
+    assert result["status"] == "ok"
+    assert result["quote"]["bid"] == 150.25
+    assert result["quote"]["ask"] == 150.50
+    assert result["quote"]["last"] == 150.30
+    # Should have pumped at least 5 times before data arrived.
+    assert pump_count[0] >= 5, f"Expected >=5 pumps, got {pump_count[0]}"
+
+
+def test_quote_keeps_polling_when_ticker_is_nan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_quote rejects NaN fields and continues polling for real data."""
+    import math
+    from types import SimpleNamespace
+
+    pump_count = [0]
+
+    ticker_ns = SimpleNamespace(
+        bid=float("nan"), ask=float("nan"), last=float("nan"),
+        close=None, volume=None, time="",
+    )
+
+    class _NanThenFillIB(_FakeIB):
+        def reqMktData(self, contract, genericTickList, snapshot, regulatorySnapshot):
+            return ticker_ns
+
+        def sleep(self, seconds):
+            pump_count[0] += 1
+            if pump_count[0] >= 8:
+                ticker_ns.bid = 200.0
+                ticker_ns.ask = 201.0
+                ticker_ns.last = 200.5
+
+    module = types.ModuleType("ib_async")
+    module.IB = _NanThenFillIB
+    module.Stock = _FakeStock
+    module.Contract = _FakeContract
+    monkeypatch.setitem(sys.modules, "ib_async", module)
+    monkeypatch.setattr(local, "tcp_port_open", lambda *_, **__: True)
+    monkeypatch.setattr(local._pool._local, "refcount", 0)
+    monkeypatch.setattr(local._pool._local, "ib", None)
+
+    result = local.get_quote("AAPL", config=local.IBKRLocalConfig(profile="paper"))
+    assert result["status"] == "ok"
+    assert result["quote"]["bid"] == 200.0
+    assert pump_count[0] >= 8, f"Expected >=8 pumps (skipped NaN), got {pump_count[0]}"
+
+def test_pool_refcount_disconnects_on_last_release(fake_ib_async) -> None:
+    """disconnect() is called only when refcount reaches zero."""
+    cfg = local.IBKRLocalConfig(profile="paper", client_id=77)
+
+    # Clear any prior thread-local state from other tests.
+    local._pool._local.refcount = 0
+    local._pool._local.ib = None
+
+    ib1 = local._pool.acquire(cfg)
+    assert local._pool._local.refcount == 1
+
+    ib2 = local._pool.acquire(cfg)
+    assert ib2 is ib1  # Same thread → same connection
+    assert local._pool._local.refcount == 2
+
+    local._pool.release()
+    assert local._pool._local.refcount == 1
+    assert getattr(ib1, "disconnected", False) is False
+
+    local._pool.release()
+    assert local._pool._local.refcount == 0
+    assert getattr(ib1, "disconnected", True) is True
+    assert local._pool._local.ib is None
+
+
+def test_pool_release_idempotent_no_connection(fake_ib_async) -> None:
+    """Calling release on an empty pool is a no-op."""
+    local._pool._local.refcount = 0
+    local._pool._local.ib = None
+    # Must not raise.
+    local._pool.release()

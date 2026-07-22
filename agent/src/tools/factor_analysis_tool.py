@@ -42,6 +42,12 @@ def run_factor_analysis(
     if factor_df.empty or return_df.empty:
         return json.dumps({"status": "error", "error": "Factor or return data is empty"}, ensure_ascii=False)
 
+    if n_groups < 1:
+        return json.dumps(
+            {"status": "error", "error": f"n_groups must be >= 1, got {n_groups}"},
+            ensure_ascii=False,
+        )
+
     ic_series = compute_ic_series(factor_df, return_df)
     if ic_series.empty:
         return json.dumps(
@@ -52,7 +58,9 @@ def run_factor_analysis(
     ic_series.to_csv(out_path / "ic_series.csv", header=["IC"])
 
     ic_mean = float(ic_series.mean())
-    ic_std = float(ic_series.std())
+    # ``Series.std()`` uses ddof=1, so a single IC observation yields NaN and
+    # poisons the JSON summary (sibling to metrics.py's single-bar vol guard).
+    ic_std = float(ic_series.std()) if len(ic_series) > 1 else 0.0
     ir = ic_mean / ic_std if ic_std > 0 else 0.0
     ic_positive_ratio = float((ic_series > 0).mean())
 
@@ -64,7 +72,8 @@ def run_factor_analysis(
         "ic_count": len(ic_series),
     }
     (out_path / "ic_summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
     )
 
     equity_df = compute_group_equity(factor_df, return_df, n_groups)
@@ -93,7 +102,7 @@ def run_factor_analysis(
         "output_dir": str(out_path),
         "files": ["ic_series.csv", "ic_summary.json", "group_equity.csv"],
     }
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    return json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
 
 
 class FactorAnalysisTool(BaseTool):

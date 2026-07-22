@@ -274,6 +274,57 @@ def register_system_routes(
             logger.exception("Correlation computation failed for codes=%s", code_list)
             raise HTTPException(status_code=500, detail="Correlation computation failed")
 
+    @app.get("/correlation/regime", dependencies=[Depends(require_auth)])
+    async def get_correlation_regime(
+        request: Request,
+        codes: str = Query(..., description="Comma-separated asset codes, e.g. BTC-USDT,ETH-USDT,SPY"),
+        days: int = Query(90, description="Timeline length in daily bars", ge=30, le=365),
+        corr_window: int = Query(60, description="Rolling correlation window in bars", ge=5, le=250),
+        edge_threshold: float = Query(0.5, description="|corr| level at which a pair counts as an edge", gt=0.0, lt=1.0),
+        smooth_window: int = Query(5, description="Trailing smoothing window in bars", ge=1, le=60),
+        enter_threshold: float = Query(0.65, description="Smoothed density that opens a FUSED regime", gt=0.0, lt=1.0),
+        exit_threshold: float = Query(0.45, description="Smoothed density that closes a FUSED regime (must be below enter_threshold)", gt=0.0, lt=1.0),
+    ):
+        """Correlation-regime timeline: edge density + hysteresis over time.
+
+        Applies Mode 1 of the correlation-regime skill to the same price data
+        /correlation uses: rolling pairwise correlations are reduced to an
+        edge-density series, causally smoothed, and run through a two-threshold
+        hysteresis state machine. Descriptive risk context, not a trading
+        signal. Shares /correlation's rate-limit budget.
+        """
+        from backtest.regime import compute_regime_timeline
+
+        if not _correlation_rate_limiter.allow(_client_key(request)):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Rate limit exceeded, try again later",
+            )
+
+        code_list = [c.strip() for c in codes.split(",") if c.strip()]
+        if len(code_list) < 2:
+            raise HTTPException(status_code=400, detail="At least 2 asset codes required")
+        if len(code_list) > 20:
+            raise HTTPException(status_code=400, detail="Maximum 20 assets per request")
+        if exit_threshold >= enter_threshold:
+            raise HTTPException(status_code=400, detail="exit_threshold must be below enter_threshold")
+
+        try:
+            return compute_regime_timeline(
+                codes=code_list,
+                days=days,
+                corr_window=corr_window,
+                edge_threshold=edge_threshold,
+                smooth_window=smooth_window,
+                enter_threshold=enter_threshold,
+                exit_threshold=exit_threshold,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception:
+            logger.exception("Regime timeline computation failed for codes=%s", code_list)
+            raise HTTPException(status_code=500, detail="Regime timeline computation failed")
+
     @app.post("/system/shutdown")
     async def shutdown_local_api(
         background_tasks: BackgroundTasks,

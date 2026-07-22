@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import pytest
 
 import api_server
@@ -227,6 +228,25 @@ def test_read_write_env_values_roundtrip(tmp_path):
     assert updated["BAZ"] == "qux"
 
 
+def test_settings_default_to_user_writable_config_path() -> None:
+    """Web settings must not target the installed package directory."""
+    from pathlib import Path
+
+    assert helpers.ENV_PATH == Path.home() / ".vibe-trading" / ".env"
+    assert helpers.LEGACY_ENV_PATH == helpers.AGENT_DIR / ".env"
+
+
+def test_write_env_values_creates_private_parent_directory(tmp_path) -> None:
+    target = tmp_path / "nested" / ".env"
+
+    helpers._write_env_values(target, {"KEY": "value"})
+
+    assert helpers._read_env_values(target) == {"KEY": "value"}
+    if os.name != "nt":
+        assert (target.parent.stat().st_mode & 0o777) == 0o700
+        assert (target.stat().st_mode & 0o777) == 0o600
+
+
 def test_strip_env_value_quotes():
     assert helpers._strip_env_value('"hello"') == "hello"
     assert helpers._strip_env_value("'hello'") == "hello"
@@ -234,6 +254,89 @@ def test_strip_env_value_quotes():
 
 def test_strip_env_value_inline_comment():
     assert helpers._strip_env_value("value # comment") == "value"
+
+
+def test_write_env_values_updates_last_duplicate_active_key(tmp_path):
+    """Duplicate active KEY= lines: read is last-wins; upsert must update last."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("K=old\nK=older\n", encoding="utf-8")
+    assert helpers._read_env_values(env_file)["K"] == "older"
+
+    helpers._write_env_values(env_file, {"K": "new"})
+    assert helpers._read_env_values(env_file)["K"] == "new"
+    lines = [ln for ln in env_file.read_text(encoding="utf-8").splitlines() if ln.startswith("K=")]
+    assert lines[-1] == "K=new"
+
+
+def test_write_env_values_skips_commented_keys(tmp_path):
+    """A commented `# KEY=` must not steal an upsert from a later active KEY (#738)."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "# LANGCHAIN_PROVIDER=openrouter\nLANGCHAIN_PROVIDER=deepseek\nOTHER=1\n",
+        encoding="utf-8",
+    )
+
+    helpers._write_env_values(env_file, {"LANGCHAIN_PROVIDER": "ollama"})
+
+    text = env_file.read_text(encoding="utf-8")
+    assert "# LANGCHAIN_PROVIDER=openrouter\n" in text
+    assert "LANGCHAIN_PROVIDER=ollama\n" in text
+    assert text.count("LANGCHAIN_PROVIDER=") == 2  # one comment + one active
+    assert helpers._read_env_values(env_file)["LANGCHAIN_PROVIDER"] == "ollama"
+    assert helpers._read_env_values(env_file)["OTHER"] == "1"
+
+
+def test_strip_env_value_quoted_hash_preserves_value():
+    """Quoted dotenv values may contain ' #'; do not treat as comment."""
+    assert helpers._strip_env_value('"secret # still-part-of-value"') == "secret # still-part-of-value"
+    assert helpers._strip_env_value("'secret # still-part-of-value'") == "secret # still-part-of-value"
+
+
+def test_strip_env_value_quoted_then_inline_comment():
+    """Trailing comments after a closed quote must still be stripped."""
+    assert helpers._strip_env_value('"secret" # comment') == "secret"
+    assert helpers._strip_env_value("'secret' # comment") == "secret"
+    assert helpers._strip_env_value('"a # b" # outer') == "a # b"
+    assert helpers._strip_env_value("'a # b' # outer") == "a # b"
+
+
+def test_read_write_env_quoted_hash_roundtrip(tmp_path):
+    env_file = tmp_path / ".env"
+    secret = "secret # still-part-of-value"
+    helpers._write_env_values(env_file, {"K": secret})
+    assert helpers._read_env_values(env_file)["K"] == secret
+    # Re-read the formatted line directly through strip
+    raw = env_file.read_text(encoding="utf-8")
+    assert ' #' in raw
+    line = [ln for ln in raw.splitlines() if ln.startswith("K=")][0]
+    assert helpers._strip_env_value(line.split("=", 1)[1]) == secret
+
+
+def test_read_env_values_strips_export_prefix(tmp_path):
+    """Shell-style ``export KEY=`` must read as KEY (python-dotenv parity)."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "export OPENAI_API_KEY=sk-real\nLANGCHAIN_PROVIDER=openai\n",
+        encoding="utf-8",
+    )
+    values = helpers._read_env_values(env_file)
+    assert values["OPENAI_API_KEY"] == "sk-real"
+    assert values["LANGCHAIN_PROVIDER"] == "openai"
+    assert "export OPENAI_API_KEY" not in values
+
+
+def test_write_env_values_updates_export_prefixed_key(tmp_path):
+    """Upsert must rewrite ``export KEY=`` in place, not append a duplicate KEY=."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("export TUSHARE_TOKEN=old-token\nOTHER=1\n", encoding="utf-8")
+
+    helpers._write_env_values(env_file, {"TUSHARE_TOKEN": "new-token"})
+
+    text = env_file.read_text(encoding="utf-8")
+    assert "export TUSHARE_TOKEN=new-token\n" in text
+    assert text.count("TUSHARE_TOKEN=") == 1
+    assert helpers._read_env_values(env_file)["TUSHARE_TOKEN"] == "new-token"
+    assert helpers._read_env_values(env_file)["OTHER"] == "1"
 
 
 # ============================================================================

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         encoding="utf-8",
     )
     monkeypatch.setattr(api_server, "ENV_PATH", env_path)
+    monkeypatch.setattr(api_server, "LEGACY_ENV_PATH", tmp_path / "legacy" / ".env", raising=False)
     monkeypatch.setattr(api_server, "ENV_EXAMPLE_PATH", env_example)
     monkeypatch.setattr(api_server, "_baostock_supported", lambda: False)
     monkeypatch.setattr(api_server, "_baostock_installed", lambda: False)
@@ -117,6 +119,145 @@ def test_update_llm_settings_persists_project_env(
     assert "OPENROUTER_API_KEY=or-secret-value" in env_text
     assert "LANGCHAIN_REASONING_EFFORT=max" in env_text
     assert "sk-or-v1-your-key-here" not in env_text
+
+
+def test_update_deepseek_settings_uses_exact_reported_payload(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    response = client.put(
+        "/settings/llm",
+        json={
+            "provider": "deepseek",
+            "model_name": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "sk-deepseek-test",
+            "temperature": 0.0,
+            "timeout_seconds": 120,
+            "max_retries": 2,
+            "reasoning_effort": "",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "deepseek"
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "DEEPSEEK_API_KEY=sk-deepseek-test" in env_text
+    assert "DEEPSEEK_BASE_URL=https://api.deepseek.com/v1" in env_text
+
+
+@pytest.mark.parametrize(
+    ("provider", "api_key_env", "base_url_env", "base_url"),
+    [
+        (
+            "siliconflow-cn",
+            "SILICONFLOW_API_KEY",
+            "SILICONFLOW_BASE_URL",
+            "https://api.siliconflow.cn/v1",
+        ),
+        (
+            "siliconflow-global",
+            "SILICONFLOW_GLOBAL_API_KEY",
+            "SILICONFLOW_GLOBAL_BASE_URL",
+            "https://api.siliconflow.com/v1",
+        ),
+    ],
+)
+def test_update_siliconflow_settings_uses_provider_namespace(
+    client: TestClient,
+    tmp_path: Path,
+    provider: str,
+    api_key_env: str,
+    base_url_env: str,
+    base_url: str,
+) -> None:
+    response = client.put(
+        "/settings/llm",
+        json={
+            "provider": provider,
+            "model_name": "deepseek-ai/DeepSeek-V3.1-Terminus",
+            "base_url": base_url,
+            "api_key": "sk-siliconflow-test",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == provider
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert f"{api_key_env}=sk-siliconflow-test" in env_text
+    assert f"{base_url_env}={base_url}" in env_text
+
+
+def test_settings_write_migrates_legacy_env_to_canonical_path(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    legacy_path = tmp_path / "legacy" / ".env"
+    legacy_path.parent.mkdir()
+    legacy_path.write_text(
+        "LANGCHAIN_PROVIDER=openrouter\nTUSHARE_TOKEN=legacy-token\n",
+        encoding="utf-8",
+    )
+
+    response = client.put(
+        "/settings/llm",
+        json={
+            "provider": "deepseek",
+            "model_name": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "sk-deepseek-test",
+        },
+    )
+
+    assert response.status_code == 200
+    canonical_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "LANGCHAIN_PROVIDER=deepseek" in canonical_text
+    assert "TUSHARE_TOKEN=legacy-token" in canonical_text
+    assert legacy_path.read_text(encoding="utf-8").startswith("LANGCHAIN_PROVIDER=openrouter")
+
+
+def test_settings_write_permission_error_is_actionable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        api_server,
+        "_write_env_values",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+
+    response = client.put(
+        "/settings/llm",
+        json={
+            "provider": "deepseek",
+            "model_name": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "sk-deepseek-test",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Unable to save settings; check ownership and permissions for "
+        "~/.vibe-trading/.env"
+    )
+
+
+def test_update_nvidia_settings_persists_provider_namespace(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    response = client.put(
+        "/settings/llm",
+        json={
+            "provider": "nvidia",
+            "model_name": "nvidia/nemotron-3-ultra-550b-a55b",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key": "nvapi-test",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "nvidia"
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "NVIDIA_API_KEY=nvapi-test" in env_text
+    assert "NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1" in env_text
 
 
 def test_get_data_source_settings_treats_placeholder_as_unconfigured(
@@ -273,7 +414,7 @@ def test_settings_reads_reject_remote_dev_mode_clients(
     assert "ts-s...oken" not in data_source_response.text
 
 
-def test_settings_reads_allow_loopback_without_bearer_even_when_api_auth_key_configured(
+def test_settings_reads_require_bearer_on_loopback_when_api_auth_key_configured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env_path = tmp_path / ".env"
@@ -300,7 +441,9 @@ def test_settings_reads_allow_loopback_without_bearer_even_when_api_auth_key_con
         headers={"Authorization": "Bearer settings-secret"},
     )
 
-    assert unauthenticated_response.status_code == 200
+    # GHSA-7wgj: a configured key gates settings reads even on loopback (the
+    # bundled frontend sends the bearer once the key is stored in Settings).
+    assert unauthenticated_response.status_code == 401
     assert authenticated_response.status_code == 200
     assert authenticated_response.json()["api_key_configured"] is True
     assert authenticated_response.json()["api_key_hint"] is None
@@ -412,7 +555,8 @@ def test_update_settings_writes_env_file_with_0600_mode(
 
     assert response.status_code == 200
     mode = (tmp_path / ".env").stat().st_mode & 0o777
-    assert mode == 0o600
+    if os.name != "nt":
+        assert mode == 0o600
 
 
 def test_atomic_write_secret_is_crash_safe(
@@ -447,4 +591,19 @@ def test_atomic_write_secret_creates_0600_file(tmp_path: Path) -> None:
     helpers._atomic_write_secret(target, "KEY=value\n")
 
     assert target.read_text(encoding="utf-8") == "KEY=value\n"
-    assert (target.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":
+        assert (target.stat().st_mode & 0o777) == 0o600
+
+
+def test_atomic_write_secret_supports_platforms_without_fchmod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows must be able to persist Web UI settings without ``os.fchmod``."""
+    from src.api import helpers
+
+    monkeypatch.delattr(helpers.os, "fchmod", raising=False)
+    target = tmp_path / ".env"
+
+    helpers._atomic_write_secret(target, "KEY=value\n")
+
+    assert target.read_text(encoding="utf-8") == "KEY=value\n"

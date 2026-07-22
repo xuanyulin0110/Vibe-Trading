@@ -75,7 +75,7 @@ class SignalEngine:
         for rule in RULES:
             if rule["market"] == market or rule["market"] == "other":
                 return rule
-        return RULES[0] if RULES else None
+        return None
 
     @staticmethod
     def _conditional_entry(
@@ -94,6 +94,13 @@ class SignalEngine:
         ret_min = rule.get("prior_5d_return_min")
         ret_max = rule.get("prior_5d_return_max")
 
+        # Daily (or coarser) bars share a single time-of-day, so an
+        # entry-hour window mined from intraday journal fills carries no
+        # information here — gating on it would reject every bar (daily
+        # bars are typically stamped at midnight, before any market-hours
+        # window). Enforce the window only on intraday data.
+        intraday = len({pd.Timestamp(ts).time() for ts in index}) > 1
+
         values = [0.0] * len(index)
         remaining_hold = 0
 
@@ -103,9 +110,10 @@ class SignalEngine:
                 remaining_hold -= 1
                 continue
 
-            bar_hour = pd.Timestamp(index[i]).hour
-            if bar_hour < hour_min or bar_hour > hour_max:
-                continue
+            if intraday:
+                bar_hour = pd.Timestamp(index[i]).hour
+                if bar_hour < hour_min or bar_hour > hour_max:
+                    continue
 
             if rsi_min is not None and rsi_max is not None:
                 rsi_val = rsi.iloc[i]

@@ -47,15 +47,13 @@ def _build_rule_engines(config: dict, codes: List[str]) -> Dict[str, BaseEngine]
             from backtest.engines.forex import ForexEngine
             engines["forex"] = ForexEngine(config)
         elif market == "futures":
-            china = any(
-                _is_china_futures(c) for c in codes if _detect_market(c) == "futures"
-            )
-            if china:
+            futures_codes = [c for c in codes if _detect_market(c) == "futures"]
+            if any(_is_china_futures(c) for c in futures_codes):
                 from backtest.engines.china_futures import ChinaFuturesEngine
-                engines["futures"] = ChinaFuturesEngine(config)
-            else:
+                engines["china_futures"] = ChinaFuturesEngine(config)
+            if any(not _is_china_futures(c) for c in futures_codes):
                 from backtest.engines.global_futures import GlobalFuturesEngine
-                engines["futures"] = GlobalFuturesEngine(config)
+                engines["global_futures"] = GlobalFuturesEngine(config)
 
     return engines
 
@@ -90,7 +88,14 @@ class CompositeEngine(BaseEngine):
     def _rule_for(self, symbol: str) -> BaseEngine:
         """Get the sub-engine that provides rules for this symbol."""
         market = self._symbol_market.get(symbol, "a_share")
-        return self._rule_engines[market]
+        if market == "futures":
+            market = "china_futures" if _is_china_futures(symbol) else "global_futures"
+        engine = self._rule_engines.get(market)
+        if engine is None:
+            if not self._rule_engines:
+                raise ValueError("No sub-engines available for composite backtest")
+            engine = next(iter(self._rule_engines.values()))
+        return engine
 
     # ── Stateless method dispatch ──
 
@@ -154,6 +159,9 @@ class CompositeEngine(BaseEngine):
         self, symbol: str, target_notional: float, price: float,
     ) -> float:
         return self._rule_for(symbol)._calc_raw_size(symbol, target_notional, price)
+
+    def _leverage_for_symbol(self, symbol: str) -> float:
+        return self._rule_for(symbol)._leverage_for_symbol(symbol)
 
     # ── Stateful hooks (implemented directly, NO delegation) ──
 

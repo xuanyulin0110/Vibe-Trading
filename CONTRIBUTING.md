@@ -140,6 +140,14 @@ merging. Authors are strongly encouraged to self-check first.
 ## Code Style
 
 - Format with `black`; lint with `ruff` (config in `pyproject.toml`).
+- Install both tools with the development extra: `pip install -e ".[dev]"`.
+- Run them on the Python files you changed, for example:
+  ```bash
+  black --check agent/src/example.py agent/tests/test_example.py
+  ruff check agent/src/example.py agent/tests/test_example.py
+  ```
+  The repository does not yet enforce a whole-tree Black or Ruff check, so
+  avoid mixing unrelated formatting cleanup into a focused pull request.
 - Type-annotate all public function and method signatures.
 - Google-style docstrings (`Args:` / `Returns:` / `Raises:`).
 - Keep files under 400 lines where practical, 800 hard cap.

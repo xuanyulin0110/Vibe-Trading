@@ -95,11 +95,14 @@ def _get_channel_runtime():
     _channel_bus = MessageBus()
     config = load_channels_config()
     _channel_manager = ChannelManager(config, _channel_bus, session_service=svc)
+    global_operators, channel_operators = ChannelRuntime.operators_from_config(config)
     _channel_runtime = ChannelRuntime(
         bus=_channel_bus,
         session_service=svc,
         manager=_channel_manager,
         reply_timeout_s=config["reply_timeout_s"],
+        operators=global_operators,
+        channel_operators=channel_operators,
     )
     _set_host_attr("_channel_runtime", _channel_runtime)
     _set_host_attr("_channel_bus", _channel_bus)

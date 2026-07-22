@@ -9,6 +9,8 @@ Validates:
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -265,6 +267,20 @@ class TestCalcMetrics:
         assert m["final_value"] == 1_000_000
         assert m["total_return"] == 0
 
+    def test_single_bar_equity_metrics_finite(self) -> None:
+        # A one-bar backtest yields a single-observation return series.
+        # ``Series.std()`` (ddof=1) is NaN for a single element, which used
+        # to poison Sharpe and the information ratio (Sortino was already
+        # guarded). Every risk metric must stay finite.
+        eq = pd.Series([1_000_000.0], index=pd.bdate_range("2025-01-01", periods=1))
+        bench_ret = pd.Series([0.0], index=eq.index)
+        m = calc_metrics(eq, [], 1_000_000, 252, bench_ret=bench_ret)
+        for key in ("sharpe", "sortino", "information_ratio",
+                    "annual_return", "max_drawdown", "calmar"):
+            assert math.isfinite(m[key]), f"{key} is not finite: {m[key]!r}"
+        assert m["sharpe"] == 0.0
+        assert m["information_ratio"] == 0.0
+
     def test_final_value(self) -> None:
         eq = self._growing_equity()
         m = calc_metrics(eq, [], 1_000_000, 252)
@@ -288,6 +304,56 @@ class TestCalcMetrics:
         # Calmar = annual_return / |max_drawdown|
         if m["annual_return"] > 0:
             assert m["calmar"] > 0
+
+    def test_zero_final_equity(self) -> None:
+        """A full wipeout (equity reaches 0) annualises to -100%, not a crash."""
+        dates = pd.bdate_range("2025-01-01", periods=252)
+        eq = pd.Series(np.linspace(1_000_000, 0.0, 252), index=dates)
+        m = calc_metrics(eq, [], 1_000_000, 252)
+        assert m["total_return"] == pytest.approx(-1.0)
+        assert m["annual_return"] == pytest.approx(-1.0)
+
+    def test_negative_final_equity_does_not_crash(self) -> None:
+        """A leveraged/short book can end below zero equity (total_return < -1).
+
+        ``(1 + total_return) ** fractional`` would raise a negative base to a
+        fractional power (a ``complex``) and crash ``float(...)``; the metric
+        must instead report a -100% annualised return.
+        """
+        dates = pd.bdate_range("2025-01-01", periods=252)
+        eq = pd.Series(np.linspace(1_000_000, -500_000, 252), index=dates)
+        m = calc_metrics(eq, [], 1_000_000, 252)
+        assert m["total_return"] == pytest.approx(-1.5)
+        assert m["annual_return"] == pytest.approx(-1.0)
+        assert m["final_value"] == pytest.approx(-500_000)
+
+    def test_explosive_equity_annualization_does_not_overflow(self) -> None:
+        """A 1 → 1e6 two-bar path overflows ``growth ** factor`` on CPython.
+
+        Metrics must stay defined (non-finite annual_return is acceptable).
+        """
+        eq = pd.Series([1.0, 1_000_000.0])
+        m = calc_metrics(eq, [], 1.0, 252)
+        assert m["total_return"] == pytest.approx(999_999.0)
+        assert m["annual_return"] == float("inf")
+
+    def test_zero_crossing_equity_keeps_risk_ratios_finite(self) -> None:
+        """Equity that hits exactly 0 then recovers yields inf pct_change.
+
+        Options metrics already skip non-finite returns; equity calc_metrics
+        must keep Sharpe/Sortino/IR finite (0) instead of leaking NaN/inf.
+        """
+        dates = pd.bdate_range("2025-01-01", periods=3)
+        eq = pd.Series([100.0, 0.0, 50.0], index=dates)
+        bench = pd.Series([0.0, -1.0, 0.0], index=dates)
+        m = calc_metrics(eq, [], 100.0, 252, bench_ret=bench)
+        for key in ("sharpe", "sortino", "information_ratio", "calmar"):
+            assert math.isfinite(m[key]), f"{key} is not finite: {m[key]!r}"
+        assert m["sharpe"] == 0.0
+        assert m["sortino"] == 0.0
+        assert m["information_ratio"] == 0.0
+        assert m["total_return"] == pytest.approx(-0.5)
+        assert m["max_drawdown"] == pytest.approx(-1.0)
 
 
 # ---------------------------------------------------------------------------

@@ -240,3 +240,19 @@ class TestRollingCorrelationMatrix:
         df = pd.DataFrame({"open": [1, 2, 3]})
         with pytest.raises(ValueError, match="No 'close' column"):
             _rolling_correlation_matrix({"X": df}, window=30, method="pearson")
+
+
+def test_rolling_correlation_unnamed_datetime_index() -> None:
+    """OHLCV frames with an unnamed DatetimeIndex must not KeyError on trade_date."""
+    import numpy as np
+    import pandas as pd
+    from backtest.correlation import _rolling_correlation_matrix
+
+    idx = pd.date_range("2020-01-01", periods=40, freq="B")
+    series = {
+        "A": pd.DataFrame({"close": np.linspace(100, 110, 40)}, index=idx),
+        "B": pd.DataFrame({"close": np.linspace(50, 60, 40)}, index=idx),
+    }
+    labels, matrix = _rolling_correlation_matrix(series, window=20, method="pearson")
+    assert labels == ["A", "B"]
+    assert len(matrix) == 2

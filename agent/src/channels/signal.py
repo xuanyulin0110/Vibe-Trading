@@ -849,6 +849,24 @@ class SignalChannel(BaseChannel):
             )
 
             is_command = bool(message_text and message_text.strip().startswith("/"))
+            is_control_plane = is_command and message_text.strip().lower().startswith("/pairing")
+            if is_control_plane:
+                # Control-plane commands (/pairing) must never be authorized by
+                # group membership alone: require the sender to pass the
+                # per-sender allowlist, otherwise any member of an allowed group
+                # could drive pairing takeover. The runtime operator gate is the
+                # authoritative check; this just avoids even publishing an
+                # unauthorized control-plane command. Ordinary commands
+                # (/new, /reset) keep their existing group behavior — no
+                # asymmetry vs other channels.
+                if not self.is_allowed(sender_id):
+                    self.logger.info(
+                        "Ignoring group control-plane command from unauthorized sender {} in {}",
+                        sender_id,
+                        chat_id,
+                    )
+                    return False, chat_id
+                return True, chat_id
             if not is_command and not self._should_respond_in_group(message_text, mentions):
                 self.logger.info(
                     "Ignoring group message (require_mention: {})",

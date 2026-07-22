@@ -387,3 +387,28 @@ def search(query: str) -> List[Dict[str, Any]]:
     )
     quotes = (payload or {}).get("quotes") or []
     return [quote for quote in quotes if isinstance(quote, dict)]
+
+
+def search_news(query: str, count: int) -> List[Dict[str, Any]]:
+    """Look up matching news via the v1 search endpoint.
+
+    Args:
+        query: Free-text query (ticker fragment or company name).
+        count: Maximum number of news items requested from Yahoo.
+
+    Returns:
+        The ``news`` list (each a dict with ``title``, ``publisher``, ``link``,
+        ``providerPublishTime``, ``relatedTickers``, ...), or an empty list when
+        none match.
+
+    Raises:
+        requests.RequestException: On a network/HTTP failure.
+    """
+    payload = throttled_get_json(
+        _SEARCH_BASE,
+        host_key=HOST_KEY,
+        min_interval=_min_interval(),
+        params={"q": query, "newsCount": count},
+    )
+    news = (payload or {}).get("news") or []
+    return [item for item in news if isinstance(item, dict)]

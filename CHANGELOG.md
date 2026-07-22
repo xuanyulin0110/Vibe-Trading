@@ -5,7 +5,17 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.12] — 2026-07-22
+
 ### Added
+- **User swarm-presets directory**: preset YAMLs dropped into
+  `~/.vibe-trading/swarm/presets/` are discovered alongside the bundled
+  roster (same-name files override it — the same rule as user skills) and
+  survive `pip install -U`. `list_presets()` entries now carry a
+  `source: "user" | "bundled"` field; explicitly named user presets run
+  through `run_swarm(preset_name=...)`, while keyword auto-routing stays
+  limited to the curated table. Preset names are validated to a single path
+  segment before any filesystem lookup.
 - **Security hardening**: all 10 findings from the 2026-07-10 external audit
   closed (#476, tracking discussion #468) — Docker multi-stage rebuild with
   digest-pinned base images, AST-hardened backtest sandbox (blocks
@@ -25,6 +35,21 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   in backtest metrics for every optimizer (#478, thanks @Robin1987China).
 - **Frazzini-Pedersen betting-against-beta** academic factor (#480, thanks
   @YogeshModi24) — Alpha Zoo: 460 → **461**.
+- **MetaTrader 5 connector + data source** (Exness-style MT5 brokers,
+  Windows-only `pip install "vibe-trading-ai[mt5]"`). Broker connectors:
+  11 → **12** — full read surface plus order placement against a locally
+  running terminal, with a bidirectional identity guard (paper profile ⇔
+  demo `trade_mode`, login pinned, contest rejected), connector-level
+  `max_order_volume`/`max_order_notional_usd` guards on demo AND live, and
+  hedging-safe position close by ticket. The live mandate gate gains
+  `forex`/`cfd` instrument vocabulary (schema v1 unchanged) and a lot-aware
+  `quantity_notional_usd` sizing hook so USD caps bind on lot-sized orders
+  (0.1 lot EURUSD ≈ $10,800, never 0.1 × quote). Market-data sources:
+  20 → **21** — the `mt5` loader heads the forex fallback chain (broker-exact
+  symbols with Exness suffix discovery, 1m–1D bars), `get_market_data` learns
+  forex/metal symbol routing (`EUR/USD`, `XAUUSD.FX` previously fell through
+  to tushare), and akshare's forex path accepts the canonical slash form so
+  degradation off-Windows keeps working.
 - **Strategy Development Manager** skill (#457, thanks @shadowinlife, closes
   #455) — `sdm_register` / `sdm_status` / `sdm_decay_scan` turn academic
   papers and broker research into registered factors/strategies with a
@@ -39,6 +64,31 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 - Binance USD-M perpetual routing, slice 1 of #462 (#470, thanks @honginp) —
   explicit `BTC-USDT-PERP` symbol contract with execution/mark price
   separation, fail-closed when the two aren't timestamp-synchronized.
+- **Correlation regime timeline** (#756, thanks @ebujinovch, closes #719) — a
+  new additive `GET /correlation/regime` endpoint plus an opt-in "Regime
+  timeline" strip on the Correlation tab: rolling pairwise correlations reduce
+  to an edge-density series, causally smoothed, and run through a two-threshold
+  hysteresis state machine that marks FUSED episodes ("when did the market fuse
+  into one bloc?"). Descriptive risk context, not a trading signal; shares
+  `/correlation`'s auth + rate-limit budget. Backed by the **correlation-regime
+  skill** (#557, thanks @ebujinovch).
+- **Three new LLM providers** — SiliconFlow CN + Global (#565, thanks @UNHNQ),
+  iFlytek Spark (#537, thanks @FenjuFu), and a **native Anthropic Messages API**
+  adapter (#695, thanks @jelech; `pip install "vibe-trading-ai[anthropic]"`).
+  MiniMax now exposes its regional API endpoints (#731, thanks @octo-patch).
+- **Historical USD-M funding settlements** for Binance perpetuals (#716, thanks
+  @honginp); maintenance brackets are supplied as a validated, versioned
+  artifact rather than a live authenticated fetch (#757, thanks @honginp), so a
+  plain `-PERP` backtest stays zero-credential.
+- **Pluggable OCR** for `read_document` with optional LLM-vision extraction and
+  a configurable text-density threshold (#548, thanks @shadowinlife) — local
+  RapidOCR by default; cloud engines are explicit opt-in, never auto-selected.
+- New academic factor `academic_corr_rewire` (#705, thanks @ebujinovch) and the
+  fundamental zoo wired into the `_VALID_ZOOS` whitelist (#707, thanks
+  @sambazhu). Binance crypto fallback loader (#643) and bounded OKX history
+  fetches with rate-limit handling (#644, thanks @tyj147454413-cmd).
+- QVeris premium-track hardening — session budget applied to backtest data
+  calls (#685) and atomic credit accounting (#686, thanks @xkam7ar).
 
 ### Changed
 - Correlation tab accepts bare tickers like `AAPL,SPY` and walks the full
@@ -46,18 +96,68 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   @yxhuang, closes #471).
 - `local` loader honors the requested interval via OHLCV resampling instead
   of silently returning daily bars (#467, thanks @Shizoqua).
+- Provider credentials are resolved through one centralized path, fixing a
+  gateway misroute (#563, thanks @shadowinlife, closes #549/#553). When no
+  `*_BASE_URL` is set, the backend now falls back to the provider catalog's
+  canonical `default_base_url` (the same default Web Settings already used), so
+  a CLI / manual-`.env` user reaches the right endpoint instead of defaulting
+  to `api.openai.com`.
+- Signal alignment is vectorized for an ~80× speedup on wide panels (#698,
+  thanks @shadowinlife); swarm workers cache MCP tool-discovery specs to avoid
+  redundant RPC round-trips (#704, thanks @shadowinlife).
 
 ### Fixed
+- Explicit `source: local` backtests now route US/HK equities to the
+  global-equity engine instead of the crypto default, and explicit benchmarks
+  are fetched through the configured source's loader — `local` fails closed
+  (no yfinance fallback) so offline runs stay offline (#550).
+- Loading `.env` now invalidates an `EnvConfig` singleton cached during early
+  CLI imports, so the welcome panel, `/settings`, and dotenv diagnostic report
+  the configured provider and model consistently (#541).
 - FastMCP transport imports work across both module layouts (#469, thanks
   @roberttidball).
 - Portfolio optimizers no longer include the decision bar's close-to-close
   return in weights executed at that bar's open (#487, thanks @YZY0108).
+- Backtest turnover metrics now use actual filled and rounded position sizes;
+  targets rejected by market rules no longer inflate reported turnover.
+- End-of-backtest liquidations now apply exit slippage and include their
+  commission in the final reported equity.
+- Open-price rebalances no longer use the decision bar's close for sizing or
+  depend on whether a replacement symbol sorts before the position it closes.
 - Preflight (`vibe-trading run`) no longer resolves provider/model against a
   stale `EnvConfig` snapshot cached before dotenv loads (#479, thanks
   @ananaymital, closes #477).
 - Switching providers no longer leaves a stale `OPENAI_BASE_URL` from a
   previous configuration silently overriding the newly-resolved endpoint
   (#484, thanks @Bortlesboat, closes #482).
+- **Strict-JSON / finite-number hardening** across the backtest + tools stack
+  (thanks @santhreal): risk ratios stay finite when equity crosses zero mid-path
+  (#765) or annualizes an explosive path (#739/#740); scalar backtest metrics
+  (#766), factor IC std (#767), and pattern trend-slope (#764) emit strict
+  RFC-8259 JSON (`null`, never bare `NaN`/`Infinity`); Black-Scholes helpers
+  treat non-positive spot/strike as intrinsic (#744).
+- **Loader / data correctness** — yahoo `1m` stays minute bars instead of being
+  uppercased to monthly (#761, @santhreal); the composite engine falls back to
+  the first available sub-engine for unknown symbols (#734, thanks @Marnie0415);
+  mootdx history that doesn't reach the requested start is rejected (#692, thanks
+  @xkam7ar).
+- **Session / journal robustness** — one corrupt `session.json` (#762) or a
+  schema-bad `messages.jsonl` line (#763) no longer aborts listing/reading;
+  Excel float-stringified A-share codes (#770), unicode-dash PDF page ranges
+  (#769), and `export KEY=` dotenv lines (#768) all parse correctly (@santhreal).
+- **Native `zai` provider on glm-5.1** (#758) — endpoints that stream zero
+  chunks fall back to a non-streaming invoke instead of raising, and an HTML
+  error page surfaces an actionable base-URL hint.
+- Partial market-data results are completed through the loader fallback chain
+  instead of silently shrinking the universe (#689, closes #681).
+- Cancellation is honored before the first AgentLoop iteration (#641, thanks
+  @xkam7ar, closes #638); streaming output no longer triggers an `insertBefore`
+  DOM race in the frontend (#717, thanks @Marnie0415); codex stream HTTP
+  failures are classified for correct retry (#663, thanks @tyj147454413-cmd).
+- Robinhood connector `account_number` wiring and remote-MCP display shape
+  (#726, thanks @nareshkps).
+- Broad reliability fixes across packaging, web, scheduler, swarm, and CLI
+  (#584, thanks @xkam7ar).
 
 ## [0.1.11] — 2026-07-11
 

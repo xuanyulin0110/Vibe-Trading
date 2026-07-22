@@ -16,7 +16,32 @@ bus in the first place.
 
 from __future__ import annotations
 
+import importlib
+import sys
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _real_telegram_module():
+    """Undo test_telegram_split_fence_hang.py's module-level telegram stub.
+
+    That (upstream) file installs a fake ``telegram`` package into
+    ``sys.modules`` at import time — i.e. during pytest *collection*, before
+    any test here runs — and imports ``src.channels.telegram`` under it, so
+    the cached channel module carries stub ``BotCommand`` objects. These
+    tests need the real python-telegram-bot classes; purge the stubs and
+    re-import when the stub is detected (real package modules have a
+    ``__spec__`` from an actual loader, the stub's is None).
+    """
+    tg = sys.modules.get("telegram")
+    if tg is not None and getattr(tg, "__spec__", None) is None:
+        for name in [m for m in sys.modules if m == "telegram" or m.startswith("telegram.")]:
+            del sys.modules[name]
+        sys.modules.pop("src.channels.telegram", None)
+        pytest.importorskip("telegram")
+        importlib.import_module("src.channels.telegram")
+    yield
 
 
 class TestTelegramBusSlashCommandRegex:

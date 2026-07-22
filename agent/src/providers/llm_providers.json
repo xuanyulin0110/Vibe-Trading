@@ -27,6 +27,15 @@
     "api_key_required": true
   },
   {
+    "name": "anthropic",
+    "label": "Anthropic / Messages API Proxy",
+    "api_key_env": "ANTHROPIC_API_KEY",
+    "base_url_env": "ANTHROPIC_BASE_URL",
+    "default_model": "claude-sonnet-4-6",
+    "default_base_url": "https://api.anthropic.com",
+    "api_key_required": true
+  },
+  {
     "name": "openai-codex",
     "label": "OpenAI Codex (ChatGPT OAuth)",
     "api_key_env": null,
@@ -44,6 +53,33 @@
     "base_url_env": "DEEPSEEK_BASE_URL",
     "default_model": "deepseek-v4-pro",
     "default_base_url": "https://api.deepseek.com/v1",
+    "api_key_required": true
+  },
+  {
+    "name": "siliconflow-cn",
+    "label": "SiliconFlow (CN)",
+    "api_key_env": "SILICONFLOW_API_KEY",
+    "base_url_env": "SILICONFLOW_BASE_URL",
+    "default_model": "deepseek-ai/DeepSeek-V3.1-Terminus",
+    "default_base_url": "https://api.siliconflow.cn/v1",
+    "api_key_required": true
+  },
+  {
+    "name": "siliconflow-global",
+    "label": "SiliconFlow (Global)",
+    "api_key_env": "SILICONFLOW_GLOBAL_API_KEY",
+    "base_url_env": "SILICONFLOW_GLOBAL_BASE_URL",
+    "default_model": "deepseek-ai/DeepSeek-V3.1-Terminus",
+    "default_base_url": "https://api.siliconflow.com/v1",
+    "api_key_required": true
+  },
+  {
+    "name": "nvidia",
+    "label": "NVIDIA NIM",
+    "api_key_env": "NVIDIA_API_KEY",
+    "base_url_env": "NVIDIA_BASE_URL",
+    "default_model": "nvidia/nemotron-3-ultra-550b-a55b",
+    "default_base_url": "https://integrate.api.nvidia.com/v1",
     "api_key_required": true
   },
   {
@@ -125,6 +161,10 @@
     "base_url_env": "MINIMAX_BASE_URL",
     "default_model": "MiniMax-M3",
     "default_base_url": "https://api.minimax.io/v1",
+    "base_url_options": [
+      "https://api.minimax.io/v1",
+      "https://api.minimaxi.com/v1"
+    ],
     "api_key_required": true
   },
   {
@@ -134,6 +174,15 @@
     "base_url_env": "MIMO_BASE_URL",
     "default_model": "MiMo-72B-A27B",
     "default_base_url": "https://api.xiaomimimo.com/v1",
+    "api_key_required": true
+  },
+  {
+    "name": "spark",
+    "label": "iFlytek Spark",
+    "api_key_env": "SPARK_API_KEY",
+    "base_url_env": "SPARK_BASE_URL",
+    "default_model": "4.0Ultra",
+    "default_base_url": "https://spark-api-open.xf-yun.com/v1",
     "api_key_required": true
   },
   {

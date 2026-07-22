@@ -252,3 +252,76 @@ def _write_ohlcv(path: Path) -> None:
         index=idx,
     )
     df.to_csv(path)
+
+
+def test_find_peaks_valleys_rejects_nonpositive_window() -> None:
+    close = pd.Series(range(30), dtype=float)
+    with pytest.raises(ValueError, match="window"):
+        find_peaks_valleys(close, window=-1)
+    with pytest.raises(ValueError, match="window"):
+        find_peaks_valleys(close, window=0)
+
+
+def test_trend_line_slope_rejects_nonpositive_window() -> None:
+    close = pd.Series(range(30), dtype=float)
+    with pytest.raises(ValueError, match="window"):
+        trend_line_slope(close, window=0)
+
+
+def test_trend_line_slope_rejects_window_one() -> None:
+    """window=1 passes the old >=1 guard then polyfit raises LinAlgError."""
+    close = pd.Series(range(30), dtype=float)
+    with pytest.raises(ValueError, match="window must be >= 2"):
+        trend_line_slope(close, window=1)
+
+
+def test_trend_line_slope_window_two_is_finite() -> None:
+    slopes = trend_line_slope(pd.Series([0.0, 1.0, 2.0, 3.0]), window=2)
+    assert pd.isna(slopes.iloc[0])
+    assert slopes.iloc[1] == pytest.approx(1.0)
+    assert slopes.iloc[2] == pytest.approx(1.0)
+
+
+def test_run_pattern_nonpositive_window_returns_json_error(allow_runs: Path) -> None:
+    run_dir = allow_runs / "run1"
+    arts = run_dir / "artifacts"
+    arts.mkdir(parents=True)
+    pd.DataFrame(
+        {"open": range(30), "high": range(30), "low": range(30), "close": range(30), "volume": 1},
+        index=pd.date_range("2024-01-01", periods=30),
+    ).to_csv(arts / "ohlcv_TEST.csv")
+    out = json.loads(run_pattern(str(run_dir), patterns="peaks_valleys", window=-1))
+    assert out["status"] == "error"
+    assert "window" in out["error"]
+
+
+def test_run_pattern_trend_slope_window_one_returns_json_error(allow_runs: Path) -> None:
+    run_dir = allow_runs / "run_trend"
+    arts = run_dir / "artifacts"
+    arts.mkdir(parents=True)
+    pd.DataFrame(
+        {"open": range(30), "high": range(30), "low": range(30), "close": range(30), "volume": 1},
+        index=pd.date_range("2024-01-01", periods=30),
+    ).to_csv(arts / "ohlcv_TEST.csv")
+    out = json.loads(run_pattern(str(run_dir), patterns="trend_slope", window=1))
+    assert out["status"] == "error"
+    assert "window" in out["error"]
+    assert "trend_slope" in out["error"] or ">= 2" in out["error"]
+
+
+def test_run_pattern_trend_slope_halt_gaps_emits_strict_json(allow_runs: Path) -> None:
+    """Alternating NaN closes leave no clean polyfit window; mean must not be NaN."""
+    run_dir = allow_runs / "run_halt"
+    arts = run_dir / "artifacts"
+    arts.mkdir(parents=True)
+    n = 15
+    close = [100.0 if i % 2 == 0 else float("nan") for i in range(n)]
+    pd.DataFrame(
+        {"open": close, "high": close, "low": close, "close": close, "volume": 1},
+        index=pd.date_range("2024-01-01", periods=n),
+    ).to_csv(arts / "ohlcv_HALT.csv")
+    raw = run_pattern(str(run_dir), patterns="trend_slope", window=5)
+    assert "NaN" not in raw and "Infinity" not in raw
+    out = json.loads(raw, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+    assert out["status"] == "ok"
+    assert out["results"]["HALT"]["trend_slope"]["mean_slope"] == 0.0
