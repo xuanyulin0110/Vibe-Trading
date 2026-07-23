@@ -1366,3 +1366,28 @@ def test_shioaji_paper_trade_profile_registered() -> None:
     assert profile.transport == "broker_sdk"
     assert profile.readonly is False
     assert "orders.place" in profile.capabilities
+
+
+def test_shioaji_account_to_dict_normalizes_pyo3_enum() -> None:
+    """Regression: shioaji's pyo3 AccountType claims to be a str subclass
+    (isinstance(x, str) is True) yet json's C encoder rejects it — found
+    live 2026-07-23 when trading_check returned "Object of type AccountType
+    is not JSON serializable" for a successfully logged-in paper session."""
+    import json
+
+    from src.trading.connectors.shioaji.sdk import _account_to_dict
+
+    class _FakeAccountType(str):
+        """Mimics pyo3: str subclass with a .value carrying the code."""
+
+        value = "F"
+
+    d = _account_to_dict({
+        "account_type": _FakeAccountType("AccountType.Future"),
+        "broker_id": "F002000",
+        "account_id": "1234567",
+        "signed": True,
+    })
+    assert d["account_type"] == "F"
+    assert type(d["account_type"]) is str
+    json.dumps(d)  # must not raise

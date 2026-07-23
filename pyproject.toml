@@ -43,7 +43,10 @@ dependencies = [
     "smartmoneyconcepts>=0.0.27",
     "tushare>=1.2.89",
     "finlab>=1.0.0",
-    "shioaji>=1.2.0",
+    # Pinned: 1.7.0 removed login(contracts_timeout=...) and broke every
+    # Shioaji call site (loaders + trading connector). The whole TW stack is
+    # validated against 1.5.4; bump deliberately, never by rebuild drift.
+    "shioaji==1.5.4",
     "requests>=2.31.0",
     "yfinance>=0.2.30",
     "akshare>=1.12.0",

@@ -868,8 +868,15 @@ def _obj_get(obj: Any, name: str, default: Any = None) -> Any:
 
 
 def _account_to_dict(item: Any) -> dict[str, Any]:
+    account_type = _obj_get(item, "account_type")
+    if account_type is not None:
+        # shioaji returns a pyo3 AccountType enum. It *claims* to be a str
+        # subclass (isinstance(x, str) is True) yet json's C encoder still
+        # rejects it, so an isinstance guard is useless -- normalize
+        # unconditionally via .value ('F'/'S') with str() as the fallback.
+        account_type = str(getattr(account_type, "value", account_type))
     return {
-        "account_type": _obj_get(item, "account_type"),
+        "account_type": account_type,
         "broker_id": _obj_get(item, "broker_id"),
         "account_id": _obj_get(item, "account_id"),
         "signed": _obj_get(item, "signed"),
